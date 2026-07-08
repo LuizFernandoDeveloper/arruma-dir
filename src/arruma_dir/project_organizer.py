@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-import argparse
 import csv
 import ctypes
 import hashlib
 import json
-import logging
 import os
 import re
 import shutil
-import sys
+import threading
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-from .logging_utils import close_logger, create_operation_logger
+from arruma_dir.hardware import detect_hardware, normalize_performance_mode
+from arruma_dir.logging_utils import close_logger, create_operation_logger
 
 
 DEFAULT_ROOT = Path(r"F:\projetos")
@@ -191,6 +191,8 @@ class ProjectReport:
     external_candidates: list[ExternalCandidate] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    file_summary: dict[str, int] = field(default_factory=dict)
+    directory_summary: dict[str, int] = field(default_factory=dict)
 
     @property
     def stats(self) -> dict[str, int]:
@@ -301,6 +303,18 @@ def unique_path(path: Path) -> Path:
         counter += 1
 
 
+def summarize_file(path: Path, root: Path, file_summary: dict[str, int], directory_summary: dict[str, int]) -> None:
+    ext = path.suffix.lower() or "(sem extensão)"
+    file_summary[ext] = file_summary.get(ext, 0) + 1
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        directory = "(fora da raiz)"
+    else:
+        directory = relative.parts[0] if len(relative.parts) > 1 else "(raiz)"
+    directory_summary[directory] = directory_summary.get(directory, 0) + 1
+
+
 def iter_files(root: Path, *, max_files: int | None = None) -> Iterable[Path]:
     seen = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -316,15 +330,73 @@ def iter_files(root: Path, *, max_files: int | None = None) -> Iterable[Path]:
             yield path
 
 
-def file_sha256(path: Path) -> str:
+def is_cancelled(cancel_event: threading.Event | None) -> bool:
+    return bool(cancel_event and cancel_event.is_set())
+
+
+def file_sha256(path: Path, *, cancel_event: threading.Event | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while True:
+            if is_cancelled(cancel_event):
+                raise InterruptedError("operacao cancelada pelo usuario")
             chunk = handle.read(CHUNK_SIZE)
             if not chunk:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def hash_project_candidates(
+    candidates: list[Path],
+    *,
+    workers: int,
+    cancel_event: threading.Event | None,
+) -> tuple[dict[str, list[Path]], list[str], bool]:
+    by_hash: dict[str, list[Path]] = {}
+    errors: list[str] = []
+    cancelled = False
+    max_workers = max(1, min(workers, len(candidates)))
+
+    if max_workers == 1:
+        for path in candidates:
+            if is_cancelled(cancel_event):
+                cancelled = True
+                break
+            try:
+                digest = file_sha256(path, cancel_event=cancel_event)
+            except InterruptedError:
+                cancelled = True
+                break
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+                continue
+            by_hash.setdefault(digest, []).append(path)
+        return by_hash, errors, cancelled
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="arruma-projetos-hash") as executor:
+        pending: set[Future[tuple[Path, str]]] = {
+            executor.submit(lambda item: (item, file_sha256(item, cancel_event=cancel_event)), path)
+            for path in candidates
+        }
+        while pending:
+            if is_cancelled(cancel_event):
+                cancelled = True
+                for future in pending:
+                    future.cancel()
+                break
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    path, digest = future.result()
+                except InterruptedError:
+                    cancelled = True
+                    continue
+                except OSError as exc:
+                    errors.append(str(exc))
+                    continue
+                by_hash.setdefault(digest, []).append(path)
+    return by_hash, errors, cancelled
 
 
 def canonical_roots(root: Path) -> dict[str, Path]:
@@ -492,12 +564,14 @@ def classify_for_root(path: Path, root: Path) -> tuple[Path | None, str]:
     return None, "sem regra segura"
 
 
-def build_organization_plan(root: Path) -> list[MoveOperation]:
+def build_organization_plan(root: Path, *, cancel_event: threading.Event | None = None) -> list[MoveOperation]:
     operations: list[MoveOperation] = []
     roots = canonical_roots(root)
     scan_roots = [root, roots["entrada"]]
     if roots["entrada"].exists():
         for child in roots["entrada"].iterdir():
+            if is_cancelled(cancel_event):
+                return operations
             if child.is_dir() and canonical_text(child.name) in {"4 projeto mecanico", "projeto mecanico"}:
                 scan_roots.append(child)
     seen: set[Path] = set()
@@ -509,6 +583,8 @@ def build_organization_plan(root: Path) -> list[MoveOperation]:
             continue
         seen.add(scan_root)
         for entry in sorted(scan_root.iterdir(), key=lambda item: item.name.lower()):
+            if is_cancelled(cancel_event):
+                return operations
             if entry.name.lower() in {"projetos", STATE_DIR.lower()}:
                 continue
             if is_noise_file(entry):
@@ -548,17 +624,21 @@ def duplicate_quarantine_target(root: Path, source: Path, digest: str) -> Path:
 
 
 def find_duplicates(
+    files_to_scan: list[Path],
     root: Path,
     *,
-    max_files: int | None,
     max_size_mb: int | None,
     include_cad_duplicates: bool = False,
+    hash_workers: int = 1,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[DuplicateOperation], int]:
     max_bytes = max_size_mb * 1024 * 1024 if max_size_mb else None
     by_size: dict[int, list[Path]] = {}
     skipped_cad = 0
 
-    for path in iter_files(root, max_files=max_files):
+    for path in files_to_scan:
+        if is_cancelled(cancel_event):
+            break
         if is_cad_protected_file(path) and not include_cad_duplicates:
             skipped_cad += 1
             continue
@@ -574,14 +654,17 @@ def find_duplicates(
 
     operations: list[DuplicateOperation] = []
     for size, candidates in by_size.items():
+        if is_cancelled(cancel_event):
+            break
         if len(candidates) < 2:
             continue
-        by_hash: dict[str, list[Path]] = {}
-        for candidate in candidates:
-            try:
-                by_hash.setdefault(file_sha256(candidate), []).append(candidate)
-            except OSError:
-                continue
+        by_hash, errors, cancelled = hash_project_candidates(
+            candidates,
+            workers=hash_workers,
+            cancel_event=cancel_event,
+        )
+        if cancelled:
+            break
         for digest, files in by_hash.items():
             if len(files) < 2:
                 continue
@@ -729,6 +812,8 @@ def scan_projects(
     max_hash_size_mb: int | None = 2048,
     no_hash: bool = False,
     include_cad_duplicates: bool = False,
+    hash_workers: int = 1,
+    cancel_event: threading.Event | None = None,
 ) -> ProjectReport:
     if not root.exists():
         raise FileNotFoundError(root)
@@ -737,18 +822,38 @@ def scan_projects(
 
     report = ProjectReport(root=str(root), generated_at=datetime.now().isoformat(timespec="seconds"))
     report.warnings.extend(learned_model_summary())
-    report.organization = build_organization_plan(root)
+    if is_cancelled(cancel_event):
+        report.warnings.append("operacao cancelada pelo usuario antes da previa")
+        return report
+
+    all_files: list[Path] = []
+    if not is_cancelled(cancel_event):
+        all_files = list(iter_files(root, max_files=max_files))
+        for path in all_files:
+            if is_cancelled(cancel_event):
+                break
+            summarize_file(path, root, report.file_summary, report.directory_summary)
+
+    report.organization = build_organization_plan(root, cancel_event=cancel_event)
     if not no_hash:
+        if is_cancelled(cancel_event):
+            report.warnings.append("operacao cancelada pelo usuario antes da busca de duplicatas")
+            return report
         report.duplicates, skipped_cad = find_duplicates(
-            root,
-            max_files=max_files,
+            files_to_scan=all_files,
+            root=root,
             max_size_mb=max_hash_size_mb,
             include_cad_duplicates=include_cad_duplicates,
+            hash_workers=hash_workers,
+            cancel_event=cancel_event,
         )
         if skipped_cad:
             report.warnings.append(
                 f"{skipped_cad} arquivos CAD ignorados na quarentena de duplicatas para preservar referencias"
             )
+        if is_cancelled(cancel_event):
+            report.warnings.append("operacao cancelada pelo usuario durante a busca de duplicatas")
+            return report
     if external:
         drives = external_drives or discover_external_drives(root, include_fixed=include_fixed_external)
         if not drives:
@@ -810,6 +915,8 @@ def load_report(path: Path) -> ProjectReport:
         external_candidates=[ExternalCandidate(**item) for item in payload.get("external_candidates", [])],
         warnings=payload.get("warnings", []),
         errors=payload.get("errors", []),
+        file_summary=payload.get("file_summary", {}),
+        directory_summary=payload.get("directory_summary", {}),
     )
 
 
@@ -838,13 +945,30 @@ def apply_report(
     duplicates: bool,
     import_external: bool,
     yes: bool,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, list[str]]:
     root = Path(report.root)
     dry_run = not yes
     result: dict[str, list[str]] = {"moved": [], "copied": [], "skipped": [], "errors": []}
 
+    total_items = 0
+    if organize:
+        total_items += len(report.organization)
+    if duplicates:
+        total_items += len(report.duplicates)
+    if import_external:
+        total_items += len(report.external_candidates)
+
+    processed_items = 0
+
     if organize:
         for item in report.organization:
+            processed_items += 1
+            if progress_callback:
+                progress_callback(processed_items, total_items)
+            if is_cancelled(cancel_event):
+                raise InterruptedError("Organizacao de projetos cancelada pelo usuario.")
             source = Path(item.source)
             destination = Path(item.destination)
             try:
@@ -859,6 +983,11 @@ def apply_report(
 
     if duplicates:
         for item in report.duplicates:
+            processed_items += 1
+            if progress_callback:
+                progress_callback(processed_items, total_items)
+            if is_cancelled(cancel_event):
+                raise InterruptedError("Movimentacao de duplicatas de projetos cancelada.")
             source = Path(item.source)
             destination = Path(item.destination)
             try:
@@ -873,6 +1002,11 @@ def apply_report(
 
     if import_external:
         for item in report.external_candidates:
+            processed_items += 1
+            if progress_callback:
+                progress_callback(processed_items, total_items)
+            if is_cancelled(cancel_event):
+                raise InterruptedError("Importacao de arquivos externos cancelada.")
             source = Path(item.source)
             destination = Path(item.destination)
             try:
@@ -908,247 +1042,3 @@ def create_opcao_template(root: Path, name: str, *, yes: bool) -> list[str]:
             target.mkdir(parents=True, exist_ok=True)
         created.append(str(target))
     return created
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Organiza F:\\projetos com padrao Ramtech/Macrotec/Opcao.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    scan = subparsers.add_parser("scan", help="gera relatorio e plano sem mover nada")
-    scan.add_argument("--root", default=str(DEFAULT_ROOT))
-    scan.add_argument("--output-dir", default=None)
-    scan.add_argument("--external", action="store_true", help="vasculha drives externos/removiveis")
-    scan.add_argument("--external-drive", action="append", default=[], help="drive explicito, ex: G:\\")
-    scan.add_argument("--include-fixed-external", action="store_true", help="inclui drives fixos nao-C alem de removiveis")
-    scan.add_argument("--min-external-score", type=int, default=7)
-    scan.add_argument("--max-files", type=int, default=None)
-    scan.add_argument("--max-hash-size-mb", type=int, default=2048)
-    scan.add_argument("--no-hash", action="store_true", help="nao calcula duplicados")
-    scan.add_argument(
-        "--include-cad-duplicates",
-        action="store_true",
-        help="inclui arquivos CAD na quarentena de duplicatas; use com cuidado",
-    )
-    scan.add_argument("--verbose", action="store_true", help="mostra detalhes completos tambem no terminal")
-    scan.add_argument("--no-log-file", action="store_true", help="nao gera arquivo .log da execucao")
-
-    apply = subparsers.add_parser("apply", help="aplica partes de um relatorio")
-    apply.add_argument("--report", required=True)
-    apply.add_argument("--organize", action="store_true")
-    apply.add_argument("--duplicates", action="store_true")
-    apply.add_argument("--import-external", action="store_true")
-    apply.add_argument("--yes", action="store_true", help="executa de verdade; sem isso e simulacao")
-    apply.add_argument("--verbose", action="store_true", help="mostra detalhes completos tambem no terminal")
-    apply.add_argument("--no-log-file", action="store_true", help="nao gera arquivo .log da execucao")
-
-    template = subparsers.add_parser("template", help="cria estrutura padrao de projeto Ramtech")
-    template.add_argument("name", help="ex: P20051-792589 - BEM BRASIL")
-    template.add_argument("--root", default=str(DEFAULT_ROOT))
-    template.add_argument("--yes", action="store_true")
-
-    template_opcao = subparsers.add_parser("template-opcao", help="cria estrutura padrao de projeto mecanico Opcao")
-    template_opcao.add_argument("name", help="ex: 047-007-000-REV00 - MONTAGEM DO FORNO")
-    template_opcao.add_argument("--root", default=str(DEFAULT_ROOT))
-    template_opcao.add_argument("--yes", action="store_true")
-
-    return parser
-
-
-def make_project_logger(args: argparse.Namespace, root: str | Path, operation: str) -> tuple[logging.Logger | None, Path | None]:
-    if getattr(args, "no_log_file", False):
-        return None, None
-    logger, log_path = create_operation_logger(root, mode="projects", operation=operation, console=getattr(args, "verbose", False))
-    logger.info("comando=%s", operation)
-    logger.info("raiz=%s", root)
-    return logger, log_path
-
-
-def log_project_report(logger: logging.Logger | None, report: ProjectReport) -> None:
-    if logger is None:
-        return
-    logger.info("gerado_em=%s", report.generated_at)
-    for key, value in report.stats.items():
-        logger.info("stat.%s=%s", key, value)
-    for index, item in enumerate(report.organization, start=1):
-        logger.info(
-            "organizacao[%04d] action=%s source=%s destination=%s reason=%s",
-            index,
-            item.action,
-            item.source,
-            item.destination,
-            item.reason,
-        )
-    for index, item in enumerate(report.duplicates, start=1):
-        logger.info(
-            "duplicata[%04d] size=%s sha256=%s source=%s keeper=%s destination=%s reason=%s",
-            index,
-            item.size,
-            item.sha256,
-            item.source,
-            item.keeper,
-            item.destination,
-            item.reason,
-        )
-    for index, item in enumerate(report.external_candidates, start=1):
-        logger.info(
-            "externo[%04d] score=%s drive=%s source=%s destination=%s reasons=%s size=%s",
-            index,
-            item.score,
-            item.drive,
-            item.source,
-            item.destination,
-            "; ".join(item.reasons),
-            item.size,
-        )
-    for item in report.warnings:
-        logger.warning("%s", item)
-    for item in report.errors:
-        logger.error("%s", item)
-
-
-def log_project_apply(logger: logging.Logger | None, result: dict[str, list[str]]) -> None:
-    if logger is None:
-        return
-    logger.info(
-        "movidos=%s copiados=%s ignorados=%s erros=%s",
-        len(result["moved"]),
-        len(result["copied"]),
-        len(result["skipped"]),
-        len(result["errors"]),
-    )
-    for key in ("moved", "copied"):
-        for item in result[key]:
-            logger.info("%s %s", key, item)
-    for item in result["skipped"]:
-        logger.warning("%s", item)
-    for item in result["errors"]:
-        logger.error("%s", item)
-
-
-def print_project_report_details(report: ProjectReport) -> None:
-    for item in report.organization:
-        print(f"Plano: {item.action} | {item.source} -> {item.destination} | {item.reason}")
-    for item in report.duplicates:
-        print(f"Duplicata: {item.source} -> {item.destination} | principal={item.keeper}")
-    for item in report.external_candidates:
-        print(f"HD externo: score={item.score} | {item.source} -> {item.destination} | {', '.join(item.reasons)}")
-    for item in report.warnings:
-        print(f"Aviso: {item}")
-    for item in report.errors:
-        print(f"Erro: {item}", file=sys.stderr)
-
-
-def print_result(result: dict[str, list[str]], *, limit: int | None = 30) -> None:
-    for key in ("moved", "copied", "skipped", "errors"):
-        values = result[key]
-        print(f"{key}: {len(values)}")
-        shown = values if limit is None else values[:limit]
-        for item in shown:
-            print(f"  {item}")
-        if limit is not None and len(values) > limit:
-            print(f"  ... mais {len(values) - limit}")
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if args.command == "scan":
-        root = Path(args.root)
-        output_dir = Path(args.output_dir) if args.output_dir else state_path(root, REPORTS_DIR)
-        drives = [Path(value) for value in args.external_drive]
-        logger, log_path = make_project_logger(args, root, "scan")
-        if logger:
-            logger.info(
-                "opcoes external=%s drives=%s include_fixed_external=%s min_external_score=%s max_files=%s max_hash_size_mb=%s no_hash=%s include_cad_duplicates=%s",
-                args.external,
-                ",".join(args.external_drive),
-                args.include_fixed_external,
-                args.min_external_score,
-                args.max_files,
-                args.max_hash_size_mb,
-                args.no_hash,
-                args.include_cad_duplicates,
-            )
-        report = scan_projects(
-            root,
-            external=args.external,
-            external_drives=drives or None,
-            include_fixed_external=args.include_fixed_external,
-            min_external_score=args.min_external_score,
-            max_files=args.max_files,
-            max_hash_size_mb=args.max_hash_size_mb,
-            no_hash=args.no_hash,
-            include_cad_duplicates=args.include_cad_duplicates,
-        )
-        log_project_report(logger, report)
-        json_path, csv_path, md_path = write_report(report, output_dir)
-        print(f"Raiz: {report.root}")
-        for key, value in report.stats.items():
-            print(f"{key}: {value}")
-        if args.verbose:
-            print_project_report_details(report)
-        print(f"JSON: {json_path}")
-        print(f"CSV: {csv_path}")
-        print(f"Resumo: {md_path}")
-        if log_path:
-            print(f"Log completo: {log_path}")
-        if logger:
-            close_logger(logger)
-        return 1 if report.errors else 0
-
-    if args.command == "apply":
-        if not (args.organize or args.duplicates or args.import_external):
-            parser.error("escolha pelo menos uma acao: --organize, --duplicates ou --import-external")
-        report = load_report(Path(args.report))
-        logger, log_path = make_project_logger(args, report.root, "apply")
-        if logger:
-            logger.info(
-                "report=%s organize=%s duplicates=%s import_external=%s yes=%s dry_run=%s",
-                args.report,
-                args.organize,
-                args.duplicates,
-                args.import_external,
-                args.yes,
-                not args.yes,
-            )
-        result = apply_report(
-            report,
-            organize=args.organize,
-            duplicates=args.duplicates,
-            import_external=args.import_external,
-            yes=args.yes,
-        )
-        log_project_apply(logger, result)
-        if not args.yes:
-            print("SIMULACAO: use --yes para executar de verdade.")
-        print_result(result, limit=None if args.verbose else 30)
-        if log_path:
-            print(f"Log completo: {log_path}")
-        if logger:
-            close_logger(logger)
-        return 1 if result["errors"] else 0
-
-    if args.command == "template":
-        root = Path(args.root)
-        created = create_project_template(root, args.name, yes=args.yes)
-        if not args.yes:
-            print("SIMULACAO: use --yes para criar as pastas.")
-        for item in created:
-            print(item)
-        return 0
-
-    if args.command == "template-opcao":
-        root = Path(args.root)
-        created = create_opcao_template(root, args.name, yes=args.yes)
-        if not args.yes:
-            print("SIMULACAO: use --yes para criar as pastas.")
-        for item in created:
-            print(item)
-        return 0
-
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

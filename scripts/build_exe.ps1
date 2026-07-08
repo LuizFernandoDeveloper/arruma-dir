@@ -41,6 +41,9 @@ Invoke-Native -FilePath $Python -Arguments @(
     "--windowed",
     "--name", $Name,
     "--paths", "src",
+    "--hidden-import", "arruma_dir.hardware",
+    "--hidden-import", "arruma_dir.project_cli",
+    "--hidden-import", "arruma_dir.project_organizer",
     "src\arruma_dir\app.py"
 )
 

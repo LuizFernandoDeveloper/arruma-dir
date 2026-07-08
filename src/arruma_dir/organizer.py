@@ -6,8 +6,10 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import unicodedata
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -396,6 +398,8 @@ class ScanResult:
     duplicates: list[DuplicateGroup] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    file_summary: dict[str, int] = field(default_factory=dict)
+    directory_summary: dict[str, int] = field(default_factory=dict)
 
     @property
     def stats(self) -> dict[str, int]:
@@ -597,6 +601,18 @@ def unique_path(target: Path) -> Path:
         counter += 1
 
 
+def summarize_file(path: Path, root: Path, file_summary: dict[str, int], directory_summary: dict[str, int]) -> None:
+    ext = path.suffix.lower() or "(sem extensão)"
+    file_summary[ext] = file_summary.get(ext, 0) + 1
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        directory = "(fora da raiz)"
+    else:
+        directory = relative.parts[0] if len(relative.parts) > 1 else "(raiz)"
+    directory_summary[directory] = directory_summary.get(directory, 0) + 1
+
+
 def scan_directory(
     root: str | Path,
     *,
@@ -604,6 +620,8 @@ def scan_directory(
     include_duplicates: bool = True,
     duplicate_time_limit: float | None = 90.0,
     duplicate_max_size_mb: int | None = 512,
+    hash_workers: int = 1,
+    cancel_event: threading.Event | None = None,
 ) -> ScanResult:
     root_path = Path(root).expanduser()
     if not root_path.exists():
@@ -613,6 +631,10 @@ def scan_directory(
 
     result = ScanResult(root=str(root_path), generated_at=utc_now())
 
+    if is_cancelled(cancel_event):
+        result.skipped.append("operacao cancelada pelo usuario antes da listagem")
+        return result
+
     if looks_like_projects_cad_root(root_path):
         result.errors.append(
             "raiz parece um ambiente de Projetos/CAD com pastas 'organizar' e 'projetos'; "
@@ -621,6 +643,9 @@ def scan_directory(
         return result
 
     for entry in sorted(root_path.iterdir(), key=lambda item: item.name.lower()):
+        if is_cancelled(cancel_event):
+            result.skipped.append("operacao cancelada pelo usuario durante a previa")
+            break
         if should_skip_name(entry.name):
             result.skipped.append(str(entry))
             continue
@@ -669,10 +694,23 @@ def scan_directory(
             root_path,
             time_limit_seconds=duplicate_time_limit,
             max_file_size_mb=duplicate_max_size_mb,
+            workers=hash_workers,
+            cancel_event=cancel_event,
         )
         result.duplicates = duplicate_result.duplicates
         result.skipped.extend(duplicate_result.skipped)
         result.errors.extend(duplicate_result.errors)
+        result.file_summary = duplicate_result.file_summary
+        result.directory_summary = duplicate_result.directory_summary
+    else:
+        if is_cancelled(cancel_event):
+            result.skipped.append("operacao cancelada pelo usuario antes do resumo de arquivos")
+        else:
+            for path in iter_files(root_path):
+                if is_cancelled(cancel_event):
+                    result.skipped.append("operacao cancelada durante o resumo de arquivos")
+                    break
+                summarize_file(path, root_path, result.file_summary, result.directory_summary)
 
     return result
 
@@ -702,11 +740,24 @@ def load_plan_json(path: str | Path) -> list[PlanItem]:
     return [PlanItem.from_dict(item) for item in payload.get("plan", [])]
 
 
-def apply_plan(plan: Iterable[PlanItem], root: str | Path, *, dry_run: bool = False) -> ApplyResult:
+def apply_plan(
+    plan: Iterable[PlanItem],
+    root: str | Path,
+    *,
+    dry_run: bool = False,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> ApplyResult:
     root_path = Path(root).expanduser()
     result = ApplyResult()
+    plan_list = list(plan)
+    total_items = len(plan_list)
 
-    for item in plan:
+    for i, item in enumerate(plan_list):
+        if progress_callback:
+            progress_callback(i + 1, total_items)
+        if is_cancelled(cancel_event):
+            raise InterruptedError("Aplicacao do plano cancelada pelo usuario.")
         source = Path(item.source)
         destination = Path(item.destination)
         try:
@@ -720,7 +771,7 @@ def apply_plan(plan: Iterable[PlanItem], root: str | Path, *, dry_run: bool = Fa
                 if not source.is_dir():
                     result.skipped.append(f"nao e pasta: {source}")
                     continue
-                moves = _merge_directory(source, destination, dry_run=dry_run)
+                moves = _merge_directory(source, destination, dry_run=dry_run, cancel_event=cancel_event)
                 result.moved.extend(moves)
             elif item.action == "move":
                 target = unique_path(destination)
@@ -738,12 +789,16 @@ def apply_plan(plan: Iterable[PlanItem], root: str | Path, *, dry_run: bool = Fa
     return result
 
 
-def _merge_directory(source: Path, destination: Path, *, dry_run: bool = False) -> list[tuple[str, str]]:
+def _merge_directory(
+    source: Path, destination: Path, *, dry_run: bool = False, cancel_event: threading.Event | None = None
+) -> list[tuple[str, str]]:
     moves: list[tuple[str, str]] = []
     if not dry_run:
         destination.mkdir(parents=True, exist_ok=True)
 
     for child in sorted(source.iterdir(), key=lambda item: item.name.lower()):
+        if is_cancelled(cancel_event):
+            raise InterruptedError("Aplicacao do plano cancelada pelo usuario.")
         if should_skip_name(child.name):
             continue
         target = unique_path(destination / child.name)
@@ -780,15 +835,76 @@ def iter_files(root: Path) -> Iterable[Path]:
                 yield path
 
 
-def file_sha256(path: Path) -> str:
+def is_cancelled(cancel_event: threading.Event | None) -> bool:
+    return bool(cancel_event and cancel_event.is_set())
+
+
+def file_sha256(path: Path, *, cancel_event: threading.Event | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
         while True:
+            if is_cancelled(cancel_event):
+                raise InterruptedError("operacao cancelada pelo usuario")
             chunk = file.read(CHUNK_SIZE)
             if not chunk:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def hash_candidates_parallel(
+    candidates: list[Path],
+    *,
+    workers: int,
+    cancel_event: threading.Event | None,
+) -> tuple[dict[str, list[str]], dict[str, str], list[str], bool]:
+    by_hash: dict[str, list[str]] = {}
+    hash_by_path: dict[str, str] = {}
+    errors: list[str] = []
+    cancelled = False
+    max_workers = max(1, min(workers, len(candidates)))
+
+    if max_workers == 1:
+        for path in candidates:
+            if is_cancelled(cancel_event):
+                cancelled = True
+                break
+            try:
+                digest = file_sha256(path, cancel_event=cancel_event)
+            except InterruptedError:
+                cancelled = True
+                break
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+                continue
+            hash_by_path[str(path)] = digest
+            by_hash.setdefault(digest, []).append(str(path))
+        return by_hash, hash_by_path, errors, cancelled
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="arruma-hash") as executor:
+        pending: set[Future[tuple[Path, str]]] = {
+            executor.submit(lambda item: (item, file_sha256(item, cancel_event=cancel_event)), path)
+            for path in candidates
+        }
+        while pending:
+            if is_cancelled(cancel_event):
+                cancelled = True
+                for future in pending:
+                    future.cancel()
+                break
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    path, digest = future.result()
+                except InterruptedError:
+                    cancelled = True
+                    continue
+                except OSError as exc:
+                    errors.append(str(exc))
+                    continue
+                hash_by_path[str(path)] = digest
+                by_hash.setdefault(digest, []).append(str(path))
+    return by_hash, hash_by_path, errors, cancelled
 
 
 def find_duplicate_files(
@@ -797,6 +913,8 @@ def find_duplicate_files(
     max_files: int | None = None,
     max_file_size_mb: int | None = None,
     time_limit_seconds: float | None = None,
+    workers: int = 1,
+    cancel_event: threading.Event | None = None,
 ) -> ScanResult:
     root_path = Path(root).expanduser()
     result = ScanResult(root=str(root_path), generated_at=utc_now())
@@ -811,6 +929,9 @@ def find_duplicate_files(
         return time_limit_seconds is not None and (time.monotonic() - started_at) >= time_limit_seconds
 
     for index, path in enumerate(iter_files(root_path), start=1):
+        if is_cancelled(cancel_event):
+            result.skipped.append("duplicatas: operacao cancelada pelo usuario durante a listagem")
+            break
         if expired():
             result.skipped.append(
                 f"duplicatas: limite de tempo atingido na listagem/hash rapido: {time_limit_seconds}s; "
@@ -821,6 +942,7 @@ def find_duplicate_files(
             result.skipped.append(f"limite de arquivos atingido na busca de repetidos: {max_files}")
             break
         file_paths.append(path)
+        summarize_file(path, root_path, result.file_summary, result.directory_summary)
         try:
             size = path.stat().st_size
         except OSError as exc:
@@ -840,6 +962,9 @@ def find_duplicate_files(
         )
 
     for size, candidates in by_size.items():
+        if is_cancelled(cancel_event):
+            result.skipped.append("duplicatas: operacao cancelada pelo usuario durante hash")
+            break
         if expired():
             result.skipped.append(
                 f"duplicatas: limite de tempo atingido durante hash rapido: {time_limit_seconds}s; "
@@ -848,21 +973,22 @@ def find_duplicate_files(
             break
         if len(candidates) < 2:
             continue
-        by_hash: dict[str, list[str]] = {}
-        for path in candidates:
-            if expired():
-                result.skipped.append(
-                    f"duplicatas: limite de tempo atingido durante hash rapido: {time_limit_seconds}s; "
-                    "use --full-duplicates para varredura completa"
-                )
-                break
-            try:
-                digest = file_sha256(path)
-                hash_by_path[str(path)] = digest
-            except OSError as exc:
-                result.errors.append(f"{path}: {exc}")
-                continue
-            by_hash.setdefault(digest, []).append(str(path))
+        by_hash, hashed_paths, errors, cancelled = hash_candidates_parallel(
+            candidates,
+            workers=workers,
+            cancel_event=cancel_event,
+        )
+        hash_by_path.update(hashed_paths)
+        result.errors.extend(errors)
+        if cancelled:
+            result.skipped.append("duplicatas: operacao cancelada pelo usuario durante hash")
+            break
+        if expired():
+            result.skipped.append(
+                f"duplicatas: limite de tempo atingido durante hash rapido: {time_limit_seconds}s; "
+                "use --full-duplicates para varredura completa"
+            )
+            break
 
         for digest, hashed_files in by_hash.items():
             if len(hashed_files) > 1:
@@ -1024,6 +1150,9 @@ def move_duplicates_to_quarantine(
     dry_run: bool = False,
     duplicate_time_limit: float | None = 90.0,
     duplicate_max_size_mb: int | None = 512,
+    hash_workers: int = 1,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
     include_manual_exact: bool = False,
 ) -> ApplyResult:
     root_path = Path(root).expanduser()
@@ -1034,12 +1163,20 @@ def move_duplicates_to_quarantine(
             root_path,
             time_limit_seconds=duplicate_time_limit,
             max_file_size_mb=duplicate_max_size_mb,
+            workers=hash_workers,
+            cancel_event=cancel_event,
         ).duplicates
     )
     quarantine = root_path / "_duplicados"
     result = ApplyResult()
+    groups_list = list(groups)
+    total_groups = len(groups_list)
 
-    for group in groups:
+    for i, group in enumerate(groups_list):
+        if progress_callback:
+            progress_callback(i + 1, total_groups)
+        if is_cancelled(cancel_event):
+            raise InterruptedError("Movimentacao de duplicatas cancelada pelo usuario.")
         if group.kind != "exact":
             result.skipped.append(f"mantido para decisao: {group.reason} ({len(group.files)} arquivos)")
             continue
@@ -1076,12 +1213,20 @@ def move_files_to_quarantine(
     *,
     bucket: str = "manual",
     dry_run: bool = False,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> ApplyResult:
     root_path = Path(root).expanduser()
     quarantine = root_path / "_duplicados" / slug_name(bucket)
     result = ApplyResult()
+    files_list = list(files)
+    total_files = len(files_list)
 
-    for file_path in files:
+    for i, file_path in enumerate(files_list):
+        if progress_callback:
+            progress_callback(i + 1, total_files)
+        if is_cancelled(cancel_event):
+            raise InterruptedError("Movimentacao de arquivo cancelada pelo usuario.")
         source = Path(file_path)
         try:
             ensure_inside(root_path, source)

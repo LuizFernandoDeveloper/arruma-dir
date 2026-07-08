@@ -57,6 +57,24 @@ class ProjectOrganizerTests(unittest.TestCase):
             self.assertEqual(report.stats["organization_moves"], 1)
             self.assertIn("Opcao", report.organization[0].destination)
 
+    def test_scan_reports_file_and_directory_composition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mechanical = root / "organizar" / "4- Projeto Mecanico"
+            electrical = root / "organizar" / "1- Projeto Eletrico (Eplan)"
+            mechanical.mkdir(parents=True)
+            electrical.mkdir(parents=True)
+            (mechanical / "peca.step").write_bytes(b"step")
+            (mechanical / "desenho.slddrw").write_bytes(b"draw")
+            (electrical / "painel.pdf").write_bytes(b"pdf")
+
+            report = scan_projects(root, no_hash=True)
+
+            self.assertEqual(report.file_summary[".step"], 1)
+            self.assertEqual(report.file_summary[".slddrw"], 1)
+            self.assertEqual(report.file_summary[".pdf"], 1)
+            self.assertEqual(report.directory_summary["organizar"], 3)
+
     def test_loose_cad_file_is_not_organized_out_of_tree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -32,7 +32,7 @@ build = ["pyinstaller>=6.0"]
 
 [project.scripts]
 arruma-dir = "arruma_dir.cli:main"
-arruma-projetos = "arruma_dir.project_organizer:main"
+arruma-projetos = "arruma_dir.project_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

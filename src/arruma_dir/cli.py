@@ -5,8 +5,9 @@ import logging
 import sys
 from pathlib import Path
 
-from .logging_utils import close_logger, create_operation_logger
-from .organizer import (
+from arruma_dir.hardware import detect_hardware, normalize_performance_mode
+from arruma_dir.logging_utils import close_logger, create_operation_logger
+from arruma_dir.organizer import (
     ApplyResult,
     ScanResult,
     apply_plan,
@@ -22,6 +23,16 @@ from .organizer import (
 def add_log_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--verbose", action="store_true", help="mostra detalhes completos tambem no terminal")
     parser.add_argument("--no-log-file", action="store_true", help="nao gera arquivo .log da execucao")
+
+
+def add_performance_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--performance",
+        choices=("safe", "balanced", "max"),
+        default="balanced",
+        help="perfil de uso do hardware para hash de duplicatas",
+    )
+    parser.add_argument("--workers", type=int, default=None, help="numero de threads de hash; sobrescreve --performance")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--json", dest="json_path", help="salva a pre-visualizacao em JSON")
     scan.add_argument("--csv", dest="csv_path", help="salva o plano de movimentacao em CSV")
     add_log_args(scan)
+    add_performance_args(scan)
 
     apply = subparsers.add_parser("apply", help="aplica um plano gerado pelo scan")
     apply.add_argument("path", nargs="?", default=str(default_documents_path()))
@@ -74,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dedupe.add_argument("--all-exact", action="store_true", help="tambem move exatos sem marcador claro de copia")
     add_log_args(dedupe)
+    add_performance_args(dedupe)
 
     subparsers.add_parser("gui", help="abre a interface grafica")
     return parser
@@ -86,6 +99,13 @@ def make_logger(args: argparse.Namespace, root: str | Path, operation: str) -> t
     logger.info("comando=%s", operation)
     logger.info("raiz=%s", root)
     return logger, log_path
+
+
+def resolve_workers(args: argparse.Namespace) -> tuple[int, str]:
+    mode = normalize_performance_mode(getattr(args, "performance", "balanced"))
+    profile = detect_hardware()
+    workers = getattr(args, "workers", None) or profile.workers_for(mode)
+    return max(1, workers), profile.summary(mode)
 
 
 def log_scan(logger: logging.Logger | None, scan: ScanResult) -> None:
@@ -151,6 +171,7 @@ def print_scan_details(scan: ScanResult) -> None:
 def command_scan(args: argparse.Namespace) -> int:
     duplicate_time_limit = None if args.full_duplicates else args.duplicate_time_limit
     duplicate_max_size_mb = None if args.full_duplicates else args.duplicate_max_size_mb
+    workers, hardware_summary = resolve_workers(args)
     logger, log_path = make_logger(args, args.path, "scan")
     if logger:
         logger.info(
@@ -161,12 +182,14 @@ def command_scan(args: argparse.Namespace) -> int:
             duplicate_time_limit,
             duplicate_max_size_mb,
         )
+        logger.info("hardware=%s workers=%s", hardware_summary, workers)
     scan = scan_directory(
         args.path,
         compat_names=args.compat_names,
         include_duplicates=not args.no_duplicates,
         duplicate_time_limit=duplicate_time_limit,
         duplicate_max_size_mb=duplicate_max_size_mb,
+        hash_workers=workers,
     )
     log_scan(logger, scan)
     stats = scan.stats
@@ -178,6 +201,7 @@ def command_scan(args: argparse.Namespace) -> int:
     print(f"Arquivos exatos extras: {stats['duplicate_files']}")
     print(f"Ignorados: {stats['skipped']}")
     print(f"Erros: {stats['errors']}")
+    print(f"Hardware: {hardware_summary}")
     if args.verbose:
         print_scan_details(scan)
 
@@ -223,6 +247,7 @@ def command_apply(args: argparse.Namespace) -> int:
 def command_dedupe(args: argparse.Namespace) -> int:
     duplicate_time_limit = None if args.full_duplicates else args.duplicate_time_limit
     duplicate_max_size_mb = None if args.full_duplicates else args.duplicate_max_size_mb
+    workers, hardware_summary = resolve_workers(args)
     logger, log_path = make_logger(args, args.path, "dedupe")
     if logger:
         logger.info(
@@ -234,16 +259,19 @@ def command_dedupe(args: argparse.Namespace) -> int:
             duplicate_max_size_mb,
             args.all_exact,
         )
+        logger.info("hardware=%s workers=%s", hardware_summary, workers)
     result = move_duplicates_to_quarantine(
         args.path,
         dry_run=not args.yes,
         duplicate_time_limit=duplicate_time_limit,
         duplicate_max_size_mb=duplicate_max_size_mb,
+        hash_workers=workers,
         include_manual_exact=args.all_exact,
     )
     log_apply(logger, result)
     mode = "PREVIA" if not args.yes else "APLICADO"
     print(f"{mode}: {len(result.moved)} repetidos exatos movidos para _duplicados")
+    print(f"Hardware: {hardware_summary}")
     for source, destination in result.moved[:20]:
         print(f"- {source} -> {destination}")
     if len(result.moved) > 20:
@@ -262,7 +290,7 @@ def command_dedupe(args: argparse.Namespace) -> int:
 
 
 def command_gui() -> int:
-    from .gui import run
+    from arruma_dir.gui import run
 
     run()
     return 0

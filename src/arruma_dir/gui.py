@@ -6,9 +6,15 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Callable
 
-from .logging_utils import close_logger, create_operation_logger
-from .organizer import (
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+from arruma_dir.hardware import DiskUsage, detect_hardware, disk_usage_for, normalize_performance_mode
+
+from arruma_dir.logging_utils import close_logger, create_operation_logger
+from arruma_dir.organizer import (
     ApplyResult,
     ScanResult,
     apply_plan,
@@ -20,7 +26,7 @@ from .organizer import (
     scan_directory,
     write_scan_json,
 )
-from .project_organizer import (
+from arruma_dir.project_organizer import (
     DEFAULT_ROOT as DEFAULT_PROJECTS_ROOT,
     REPORTS_DIR,
     DuplicateOperation,
@@ -29,7 +35,7 @@ from .project_organizer import (
     scan_projects,
     state_path,
 )
-from .safety import SafetyCheck, check_organization_root
+from arruma_dir.safety import SafetyCheck, check_organization_root
 
 
 MODE_DOCUMENTS = "documents"
@@ -53,6 +59,7 @@ class ArrumaDirApp(tk.Tk):
         self.project_report: ProjectReport | None = None
         self.active_mode: str | None = None
         self.active_root: str | None = None
+        self.cancel_event = threading.Event()
         self.duplicate_rows: dict[str, dict[str, object]] = {}
         self.work_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
@@ -65,6 +72,10 @@ class ArrumaDirApp(tk.Tk):
         self.cad_duplicates_var = tk.BooleanVar(value=False)
         self.external_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Pronto")
+        self.hardware_profile = detect_hardware()
+        self.performance_var = tk.StringVar(value="balanced")
+        self.disk_usage_var = tk.StringVar(value="Uso do disco: (escolha uma pasta)")
+        self.disk_percent_var = tk.DoubleVar(value=0.0)
         self.safety_var = tk.StringVar(value="Escolha o local, gere uma previa e revise antes de aplicar.")
         self.next_step_var = tk.StringVar(value="1. Escolha o modo e a pasta. 2. Gere a previa. 3. Revise antes de aplicar.")
         self.summary_vars = {
@@ -74,11 +85,25 @@ class ArrumaDirApp(tk.Tk):
             "external": tk.StringVar(value="0"),
             "errors": tk.StringVar(value="0"),
         }
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_text_var = tk.StringVar(value="")
+
+        self.summary_chart_frame: ttk.Frame | None = None
+        self.summary_chart_canvas: FigureCanvasTkAgg | None = None
+        self.summary_chart_figure: Figure | None = None
+        self.summary_chart_ax = None
+        self.directory_chart_frame: ttk.Frame | None = None
+        self.directory_chart_canvas: FigureCanvasTkAgg | None = None
+        self.directory_chart_figure: Figure | None = None
+        self.directory_chart_ax = None
 
         self._configure_style()
         self._build_layout()
+        self.path_var.trace_add("write", self._on_path_changed)
         self._update_mode_controls()
+        self._clear_charts()
         self._set_action_buttons()
+        self._on_path_changed()
         self.after(120, self._poll_queue)
 
     def _configure_style(self) -> None:
@@ -102,6 +127,8 @@ class ArrumaDirApp(tk.Tk):
         style.configure("TLabelframe.Label", background=APP_BG, foreground="#334155", font=("Segoe UI Semibold", 9))
         style.configure("TButton", padding=(10, 6))
         style.configure("Primary.TButton", padding=(14, 7), foreground="#ffffff", background=ACCENT)
+        style.configure("Stop.TButton", padding=(10, 6), foreground="#ffffff", background="#dc2626")
+        style.map("Stop.TButton", background=[("active", "#b91c1c"), ("disabled", "#fca5a5")])
         style.map("Primary.TButton", background=[("active", "#1d4ed8"), ("disabled", "#94a3b8")])
         style.configure("Treeview", rowheight=26, font=("Segoe UI", 9), bordercolor="#e2e8f0", fieldbackground="#ffffff")
         style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9), background="#e8edf5", foreground="#0f172a")
@@ -109,7 +136,7 @@ class ArrumaDirApp(tk.Tk):
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
-
+ 
         header = tk.Frame(self, bg=HEADER_BG, padx=18, pady=14)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
@@ -119,7 +146,10 @@ class ArrumaDirApp(tk.Tk):
             text="Organizacao segura para Documentos e Projetos/CAD, sempre com previa antes de mover.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
-        ttk.Label(header, textvariable=self.status_var, style="Subtitle.TLabel").grid(row=0, column=1, rowspan=2, sticky="e")
+        status_box = ttk.Frame(header, style="TFrame")
+        status_box.configure(background=HEADER_BG)
+        status_box.grid(row=0, column=1, rowspan=2, sticky="e")
+        ttk.Label(status_box, textvariable=self.status_var, style="Subtitle.TLabel").pack(anchor="e")
 
         control_area = ttk.Frame(self, padding=(12, 12, 12, 8))
         control_area.grid(row=1, column=0, sticky="ew")
@@ -181,6 +211,17 @@ class ArrumaDirApp(tk.Tk):
         self.cad_duplicates_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.external_check = ttk.Checkbutton(options, text="Vasculhar HDs externos", variable=self.external_var)
         self.external_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        performance_box = ttk.Frame(options)
+        performance_box.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(performance_box, text="Desempenho").pack(side="left", anchor="w")
+        self.performance_combo = ttk.Combobox(
+            performance_box,
+            textvariable=self.performance_var,
+            values=["safe", "balanced", "max"],
+            state="readonly",
+            width=12,
+        )
+        self.performance_combo.pack(side="left", padx=(8, 0), anchor="w")
 
         actions = ttk.LabelFrame(control_area, text="3. Acoes", padding=(12, 10))
         actions.grid(row=0, column=2, sticky="nsew")
@@ -196,6 +237,10 @@ class ArrumaDirApp(tk.Tk):
         self.move_duplicates_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
         self.apply_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.stop_button = ttk.Button(actions, text="Parar Operacao", command=self.cancel_operation, style="Stop.TButton")
+        self.stop_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.stop_button.grid_remove()
+
 
         summary = ttk.Frame(self, padding=(12, 0, 12, 10))
         summary.grid(row=2, column=0, sticky="ew")
@@ -215,6 +260,17 @@ class ArrumaDirApp(tk.Tk):
             sticky="ew",
             pady=(2, 0),
         )
+        
+        disk_frame = ttk.LabelFrame(self, text="Uso do Disco", padding=(12, 10))
+        disk_frame.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
+        disk_frame.columnconfigure(0, weight=1)
+        ttk.Label(disk_frame, textvariable=self.disk_usage_var, style="PanelMuted.TLabel").grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Progressbar(disk_frame, variable=self.disk_percent_var, style="Disk.TProgressbar").grid(
+            row=1, column=0, sticky="ew", pady=(4, 0)
+        )
+
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
@@ -233,14 +289,48 @@ class ArrumaDirApp(tk.Tk):
         )
         notebook.add(self.duplicate_tree.master, text="Repetidos")
 
+        self.summary_chart_frame = ttk.Frame(notebook)
+        self.summary_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
+        self.summary_chart_ax = self.summary_chart_figure.add_subplot(111)
+        self.summary_chart_ax.set_facecolor(APP_BG)
+        self.summary_chart_figure.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
+
+        self.summary_chart_canvas = FigureCanvasTkAgg(self.summary_chart_figure, self.summary_chart_frame)
+        self.summary_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        notebook.add(self.summary_chart_frame, text="Tipos")
+
+        self.directory_chart_frame = ttk.Frame(notebook)
+        self.directory_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
+        self.directory_chart_ax = self.directory_chart_figure.add_subplot(111)
+        self.directory_chart_ax.set_facecolor(APP_BG)
+        self.directory_chart_figure.subplots_adjust(left=0.28, right=0.95, top=0.9, bottom=0.12)
+
+        self.directory_chart_canvas = FigureCanvasTkAgg(self.directory_chart_figure, self.directory_chart_frame)
+        self.directory_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        notebook.add(self.directory_chart_frame, text="Diretórios")
+
         self.log = tk.Text(notebook, height=8, wrap="word")
         self.log.configure(state="disabled")
         notebook.add(self.log, text="Log")
 
         status = ttk.Frame(self, padding=(12, 0, 12, 12))
-        status.grid(row=4, column=0, sticky="ew")
-        status.columnconfigure(0, weight=1)
+        status.grid(row=5, column=0, sticky="ew")
+        status.columnconfigure(0, weight=2)
+        status.columnconfigure(1, weight=1)
         ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+
+        self.progress_frame = ttk.Frame(status)
+        self.progress_frame.grid(row=0, column=1, sticky="ew", padx=(20, 0))
+        self.progress_frame.columnconfigure(1, weight=1)
+
+        self.progress_text_label = ttk.Label(self.progress_frame, textvariable=self.progress_text_var)
+        self.progress_text_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+        self.progress_bar = ttk.Progressbar(self.progress_frame, variable=self.progress_var)
+        self.progress_bar.grid(row=0, column=1, sticky="ew")
+        self.progress_frame.grid_remove()
 
     def _make_stat(self, parent: ttk.Frame, label: str, value: tk.StringVar, column: int) -> None:
         box = ttk.Frame(parent, style="Panel.TFrame", padding=(12, 8), width=130, height=70)
@@ -248,6 +338,135 @@ class ArrumaDirApp(tk.Tk):
         box.grid_propagate(False)
         ttk.Label(box, textvariable=value, style="StatValue.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(box, text=label, style="StatLabel.TLabel").grid(row=1, column=0, sticky="w")
+
+    def _on_path_changed(self, *args: object) -> None:
+        self._update_disk_usage()
+
+    def _update_disk_usage(self) -> None:
+        path = self.path_var.get()
+        if not path or not Path(path).exists():
+            self.disk_usage_var.set("Uso do disco: (pasta invalida)")
+            self.disk_percent_var.set(0.0)
+            return
+        try:
+            usage = disk_usage_for(path)
+            self.disk_usage_var.set(
+                f"Uso do disco: {usage.used_gb:.1f} GB de {usage.total_gb:.1f} GB ({usage.free_gb:.1f} GB livres)"
+            )
+            self.disk_percent_var.set(usage.used_percent)
+        except (OSError, ValueError):
+            self.disk_usage_var.set("Uso do disco: (nao foi possivel ler)")
+            self.disk_percent_var.set(0.0)
+
+    def _clear_pie_chart(self) -> None:
+        if not self.summary_chart_ax:
+            return
+        self.summary_chart_ax.clear()
+        self.summary_chart_ax.set_title("Distribuicao de Arquivos por Tipo", color=MUTED_FG)
+        self.summary_chart_ax.text(
+            0.5,
+            0.5,
+            "Gere uma previa para ver o grafico.",
+            ha="center",
+            va="center",
+            color=MUTED_FG,
+            fontsize=10,
+        )
+        if self.summary_chart_canvas:
+            self.summary_chart_canvas.draw()
+
+    def _clear_directory_chart(self) -> None:
+        if not self.directory_chart_ax:
+            return
+        self.directory_chart_ax.clear()
+        self.directory_chart_ax.set_title("Composicao por Diretorio", color=MUTED_FG)
+        self.directory_chart_ax.text(
+            0.5,
+            0.5,
+            "Gere uma previa para ver os diretorios.",
+            ha="center",
+            va="center",
+            color=MUTED_FG,
+            fontsize=10,
+            transform=self.directory_chart_ax.transAxes,
+        )
+        self.directory_chart_ax.set_axis_off()
+        if self.directory_chart_canvas:
+            self.directory_chart_canvas.draw()
+
+    def _clear_charts(self) -> None:
+        self._clear_pie_chart()
+        self._clear_directory_chart()
+
+    def _update_pie_chart(self, summary_data: dict[str, int]) -> None:
+        if not self.summary_chart_ax or not summary_data:
+            self._clear_pie_chart()
+            return
+
+        self.summary_chart_ax.clear()
+        total_files = sum(summary_data.values())
+        sorted_data = sorted(summary_data.items(), key=lambda item: item[1], reverse=True)
+
+        labels: list[str] = []
+        sizes: list[int] = []
+        other_size = 0
+        other_count = 0
+
+        for ext, count in sorted_data:
+            if count / total_files > 0.01 and len(labels) < 15:
+                labels.append(f"{ext} ({count})")
+                sizes.append(count)
+            else:
+                other_size += count
+                other_count += 1
+
+        if other_size > 0:
+            labels.append(f"Outros ({other_count} tipos)")
+            sizes.append(other_size)
+
+        wedges, texts, autotexts = self.summary_chart_ax.pie(
+            sizes, labels=labels, autopct="%1.1f%%", startangle=140, pctdistance=0.85
+        )
+        for text in texts:
+            text.set_color("#0f172a")
+        for autotext in autotexts:
+            autotext.set_color("#ffffff")
+        self.summary_chart_ax.set_title(f"Distribuicao de {total_files} Arquivos por Tipo", color="#0f172a")
+        self.summary_chart_ax.axis("equal")
+        self.summary_chart_canvas.draw()
+
+    def _update_directory_chart(self, directory_data: dict[str, int]) -> None:
+        if not self.directory_chart_ax or not directory_data:
+            self._clear_directory_chart()
+            return
+
+        self.directory_chart_ax.clear()
+        total_files = sum(directory_data.values())
+        sorted_data = sorted(directory_data.items(), key=lambda item: item[1], reverse=True)
+        top_items = sorted_data[:12]
+        other_count = sum(count for _, count in sorted_data[12:])
+        if other_count:
+            top_items.append(("Outros", other_count))
+
+        labels = [name for name, _ in reversed(top_items)]
+        sizes = [count for _, count in reversed(top_items)]
+        colors = ["#2563eb", "#0f766e", "#f59e0b", "#dc2626", "#7c3aed", "#475569"]
+        bar_colors = [colors[index % len(colors)] for index in range(len(labels))]
+
+        self.directory_chart_ax.barh(labels, sizes, color=bar_colors)
+        self.directory_chart_ax.set_title(f"Composicao de {total_files} Arquivos por Diretorio", color="#0f172a")
+        self.directory_chart_ax.set_xlabel("Arquivos")
+        self.directory_chart_ax.tick_params(axis="x", colors="#334155")
+        self.directory_chart_ax.tick_params(axis="y", colors="#334155", labelsize=8)
+        self.directory_chart_ax.grid(axis="x", color="#e2e8f0", linewidth=0.8)
+        self.directory_chart_ax.spines["top"].set_visible(False)
+        self.directory_chart_ax.spines["right"].set_visible(False)
+        self.directory_chart_ax.spines["left"].set_color("#cbd5e1")
+        self.directory_chart_ax.spines["bottom"].set_color("#cbd5e1")
+        for index, count in enumerate(sizes):
+            self.directory_chart_ax.text(count, index, f" {count}", va="center", color="#0f172a", fontsize=8)
+        if self.directory_chart_canvas:
+            self.directory_chart_canvas.draw()
 
     def _reset_summary(self) -> None:
         for value in self.summary_vars.values():
@@ -302,6 +521,7 @@ class ArrumaDirApp(tk.Tk):
                 self.path_var.set(str(default_documents_path()))
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
+        self._clear_charts()
         self.duplicate_rows.clear()
         self._reset_summary()
         self._update_mode_controls()
@@ -342,7 +562,6 @@ class ArrumaDirApp(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.path_var.get() or str(Path.home()))
         if selected:
             self.path_var.set(selected)
-            self._auto_select_mode_for_path()
 
     def _auto_select_mode_for_path(self) -> None:
         path = Path(self.path_var.get()).expanduser()
@@ -392,6 +611,13 @@ class ArrumaDirApp(tk.Tk):
             return False
         return True
 
+    def cancel_operation(self) -> None:
+        self.cancel_event.set()
+        self.status_var.set("Cancelando operacao...")
+
+    def _create_progress_callback(self) -> Callable[[int, int], None]:
+        return lambda current, total: self.work_queue.put(("progress", (current, total)))
+
     def scan(self) -> None:
         path = self.path_var.get().strip()
         if not path:
@@ -401,6 +627,7 @@ class ArrumaDirApp(tk.Tk):
         if self._check_current_root() is None:
             return
 
+        self.cancel_event.clear()
         self._set_busy("Gerando previa...")
         self.scan_result = None
         self.project_report = None
@@ -408,8 +635,14 @@ class ArrumaDirApp(tk.Tk):
         self.active_root = None
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
+        self._clear_charts()
         self.duplicate_rows.clear()
         self._reset_summary()
+
+        workers, hardware_summary = self._get_workers()
+        self._append_log(f"Usando perfil de hardware: {hardware_summary}")
+
+
 
         thread = threading.Thread(
             target=self._scan_worker,
@@ -421,10 +654,20 @@ class ArrumaDirApp(tk.Tk):
                 self.full_duplicates_var.get(),
                 self.cad_duplicates_var.get(),
                 self.external_var.get(),
+                workers,
+                self.cancel_event,
             ),
             daemon=True,
         )
         thread.start()
+
+    def _get_workers(self) -> tuple[int, str]:
+        mode = normalize_performance_mode(self.performance_var.get())
+        if not mode:
+            mode = "balanced"
+            self.performance_var.set(mode)
+        workers = self.hardware_profile.workers_for(mode)
+        return workers, self.hardware_profile.summary(mode)
 
     def _scan_worker(
         self,
@@ -435,6 +678,8 @@ class ArrumaDirApp(tk.Tk):
         full_duplicates: bool,
         include_cad_duplicates: bool,
         external: bool,
+        workers: int,
+        cancel_event: threading.Event,
     ) -> None:
         try:
             if mode == MODE_PROJECTS:
@@ -444,6 +689,8 @@ class ArrumaDirApp(tk.Tk):
                     no_hash=not include_duplicates,
                     max_hash_size_mb=None if full_duplicates else 2048,
                     include_cad_duplicates=include_cad_duplicates,
+                    hash_workers=workers,
+                    cancel_event=cancel_event,
                 )
                 self.work_queue.put(("project_scan_done", result))
                 return
@@ -454,8 +701,13 @@ class ArrumaDirApp(tk.Tk):
                 include_duplicates=include_duplicates,
                 duplicate_time_limit=None if full_duplicates else 90.0,
                 duplicate_max_size_mb=None if full_duplicates else 512,
+                hash_workers=workers,
+                cancel_event=cancel_event,
             )
             self.work_queue.put(("scan_done", result))
+
+        except InterruptedError:
+            self.work_queue.put(("cancelled", "Operacao cancelada pelo usuario."))
         except Exception as exc:  # noqa: BLE001 - shown in GUI.
             self.work_queue.put(("error", exc))
 
@@ -474,7 +726,12 @@ class ArrumaDirApp(tk.Tk):
             ):
                 return
             self._set_busy("Aplicando organizacao de projetos...")
-            thread = threading.Thread(target=self._project_apply_worker, args=("organize", None), daemon=True)
+            progress_callback = self._create_progress_callback()
+            thread = threading.Thread(
+                target=self._project_apply_worker,
+                args=("organize", None, self.cancel_event, progress_callback),
+                daemon=True,
+            )
             thread.start()
             return
 
@@ -488,13 +745,25 @@ class ArrumaDirApp(tk.Tk):
         ):
             return
         self._set_busy("Aplicando organizacao...")
-        thread = threading.Thread(target=self._apply_worker, daemon=True)
+        progress_callback = self._create_progress_callback()
+        thread = threading.Thread(target=self._apply_worker, args=(self.cancel_event, progress_callback), daemon=True)
         thread.start()
 
-    def _apply_worker(self) -> None:
-        assert self.scan_result is not None
-        result = apply_plan(self.scan_result.plan, self.scan_result.root, dry_run=False)
-        self.work_queue.put(("apply_done", result))
+    def _apply_worker(self, cancel_event: threading.Event, progress_callback: Callable[[int, int], None]) -> None:
+        try:
+            assert self.scan_result is not None
+            result = apply_plan(
+                self.scan_result.plan,
+                self.scan_result.root,
+                dry_run=False,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+            self.work_queue.put(("apply_done", result))
+        except InterruptedError as exc:
+            self.work_queue.put(("cancelled", str(exc) or "Aplicacao cancelada."))
+        except Exception as exc:
+            self.work_queue.put(("error", exc))
 
     def move_duplicates(self) -> None:
         if not self._require_same_root():
@@ -511,7 +780,12 @@ class ArrumaDirApp(tk.Tk):
             ):
                 return
             self._set_busy("Movendo duplicatas de projetos...")
-            thread = threading.Thread(target=self._project_apply_worker, args=("duplicates", None), daemon=True)
+            progress_callback = self._create_progress_callback()
+            thread = threading.Thread(
+                target=self._project_apply_worker,
+                args=("duplicates", None, self.cancel_event, progress_callback),
+                daemon=True,
+            )
             thread.start()
             return
 
@@ -525,17 +799,25 @@ class ArrumaDirApp(tk.Tk):
         ):
             return
         self._set_busy("Movendo repetidos...")
-        thread = threading.Thread(target=self._dedupe_worker, daemon=True)
+        progress_callback = self._create_progress_callback()
+        thread = threading.Thread(target=self._dedupe_worker, args=(self.cancel_event, progress_callback), daemon=True)
         thread.start()
 
-    def _dedupe_worker(self) -> None:
-        assert self.scan_result is not None
-        result = move_duplicates_to_quarantine(
-            self.scan_result.root,
-            self.scan_result.duplicates,
-            dry_run=False,
-        )
-        self.work_queue.put(("dedupe_done", result))
+    def _dedupe_worker(self, cancel_event: threading.Event, progress_callback: Callable[[int, int], None]) -> None:
+        try:
+            assert self.scan_result is not None
+            result = move_duplicates_to_quarantine(
+                self.scan_result.root,
+                self.scan_result.duplicates,
+                dry_run=False,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+            self.work_queue.put(("dedupe_done", result))
+        except InterruptedError as exc:
+            self.work_queue.put(("cancelled", str(exc) or "Movimentacao de duplicatas cancelada."))
+        except Exception as exc:
+            self.work_queue.put(("error", exc))
 
     def move_selected_duplicate(self) -> None:
         if not self._require_same_root():
@@ -561,7 +843,12 @@ class ArrumaDirApp(tk.Tk):
             ):
                 return
             self._set_busy("Movendo duplicata selecionada...")
-            thread = threading.Thread(target=self._project_apply_worker, args=("selected_duplicate", operation), daemon=True)
+            progress_callback = self._create_progress_callback()
+            thread = threading.Thread(
+                target=self._project_apply_worker,
+                args=("selected_duplicate", operation, self.cancel_event, progress_callback),
+                daemon=True,
+            )
             thread.start()
             return
 
@@ -589,33 +876,67 @@ class ArrumaDirApp(tk.Tk):
             return
 
         self._set_busy("Movendo item selecionado...")
-        thread = threading.Thread(target=self._move_selected_worker, args=(file_path, kind), daemon=True)
+        progress_callback = self._create_progress_callback()
+        thread = threading.Thread(
+            target=self._move_selected_worker, args=(file_path, kind, self.cancel_event, progress_callback), daemon=True
+        )
         thread.start()
 
-    def _move_selected_worker(self, file_path: str, kind: str) -> None:
-        assert self.scan_result is not None
-        bucket = "decisao_manual" if kind == "possible" else "duplicado_exato"
-        result = move_files_to_quarantine(self.scan_result.root, [file_path], bucket=bucket, dry_run=False)
-        self.work_queue.put(("selected_duplicate_done", result))
+    def _move_selected_worker(
+        self, file_path: str, kind: str, cancel_event: threading.Event, progress_callback: Callable[[int, int], None]
+    ) -> None:
+        try:
+            assert self.scan_result is not None
+            bucket = "decisao_manual" if kind == "possible" else "duplicado_exato"
+            result = move_files_to_quarantine(
+                self.scan_result.root,
+                [file_path],
+                bucket=bucket,
+                dry_run=False,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+            self.work_queue.put(("selected_duplicate_done", result))
+        except InterruptedError as exc:
+            self.work_queue.put(("cancelled", str(exc) or "Movimentacao cancelada."))
+        except Exception as exc:
+            self.work_queue.put(("error", exc))
 
-    def _project_apply_worker(self, action: str, operation: DuplicateOperation | None) -> None:
-        assert self.project_report is not None
-        if action == "selected_duplicate" and operation is not None:
-            report = ProjectReport(
-                root=self.project_report.root,
-                generated_at=self.project_report.generated_at,
-                duplicates=[operation],
-            )
-            result = apply_project_report(report, organize=False, duplicates=True, import_external=False, yes=True)
-        else:
-            result = apply_project_report(
-                self.project_report,
-                organize=action == "organize",
-                duplicates=action == "duplicates",
-                import_external=False,
-                yes=True,
-            )
-        self.work_queue.put(("project_apply_done", result))
+    def _project_apply_worker(
+        self, action: str, operation: DuplicateOperation | None, cancel_event: threading.Event, progress_callback: Callable
+    ) -> None:
+        try:
+            assert self.project_report is not None
+            if action == "selected_duplicate" and operation is not None:
+                report = ProjectReport(
+                    root=self.project_report.root,
+                    generated_at=self.project_report.generated_at,
+                    duplicates=[operation],
+                )
+                result = apply_project_report(
+                    report,
+                    organize=False,
+                    duplicates=True,
+                    import_external=False,
+                    yes=True,
+                    cancel_event=cancel_event,
+                    progress_callback=progress_callback,
+                )
+            else:
+                result = apply_project_report(
+                    self.project_report,
+                    organize=action == "organize",
+                    duplicates=action == "duplicates",
+                    import_external=False,
+                    yes=True,
+                    cancel_event=cancel_event,
+                    progress_callback=progress_callback,
+                )
+            self.work_queue.put(("project_apply_done", result))
+        except InterruptedError as exc:
+            self.work_queue.put(("cancelled", str(exc) or "Operacao de projetos cancelada."))
+        except Exception as exc:
+            self.work_queue.put(("error", exc))
 
     def export_json(self) -> None:
         if self.active_mode == MODE_PROJECTS:
@@ -662,11 +983,25 @@ class ArrumaDirApp(tk.Tk):
                     self._on_apply_done(payload, event)  # type: ignore[arg-type]
                 elif event == "project_apply_done":
                     self._on_project_apply_done(payload)  # type: ignore[arg-type]
+                elif event == "progress":
+                    self._on_progress(payload)  # type: ignore[arg-type]
+                elif event == "cancelled":
+                    self._on_cancelled(payload)  # type: ignore[arg-type]
                 elif event == "error":
                     self._on_error(payload)  # type: ignore[arg-type]
         except queue.Empty:
             pass
         self.after(120, self._poll_queue)
+
+    def _on_progress(self, payload: tuple[int, int]) -> None:
+        current, total = payload
+        if total > 0:
+            percent = (current / total) * 100
+            self.progress_var.set(percent)
+            self.progress_text_var.set(f"{current} de {total}")
+        else:
+            self.progress_var.set(0.0)
+            self.progress_text_var.set("")
 
     def _on_scan_done(self, result: ScanResult) -> None:
         self.scan_result = result
@@ -729,6 +1064,8 @@ class ArrumaDirApp(tk.Tk):
         for error in result.errors:
             self._append_log(f"Erro: {error}")
         self._write_document_scan_log(result)
+        self._update_pie_chart(result.file_summary)
+        self._update_directory_chart(result.directory_summary)
         self._finish_busy()
 
     def _on_project_scan_done(self, report: ProjectReport) -> None:
@@ -799,6 +1136,8 @@ class ArrumaDirApp(tk.Tk):
         for error in report.errors:
             self._append_log(f"Erro: {error}")
         self._write_project_scan_log(report)
+        self._update_pie_chart(report.file_summary)
+        self._update_directory_chart(report.directory_summary)
         self._finish_busy()
 
     def _on_apply_done(self, result: ApplyResult, event: str) -> None:
@@ -967,6 +1306,11 @@ class ArrumaDirApp(tk.Tk):
         self._append_log(f"Erro: {exc}")
         self._finish_busy()
 
+    def _on_cancelled(self, message: str) -> None:
+        self.status_var.set(message or "Operacao cancelada.")
+        self._append_log(message or "Operacao cancelada.")
+        self._finish_busy()
+
     def _clear_tree(self, tree: ttk.Treeview) -> None:
         for item in tree.get_children():
             tree.delete(item)
@@ -975,10 +1319,20 @@ class ArrumaDirApp(tk.Tk):
         self.busy = True
         self.status_var.set(message)
         self._append_log(message)
+        self.progress_var.set(0.0)
+        self.progress_text_var.set("")
+        self.progress_frame.grid()
+        self.cancel_event.clear()
+        self.stop_button.grid()
         self._set_action_buttons()
 
     def _finish_busy(self) -> None:
         self.busy = False
+        self.progress_frame.grid_remove()
+        self.progress_var.set(0.0)
+        self.progress_text_var.set("")
+        self.stop_button.grid_remove()
+        self.cancel_event.clear()
         self._set_action_buttons()
 
     def _append_log(self, message: str) -> None:

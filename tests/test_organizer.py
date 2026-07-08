@@ -42,6 +42,27 @@ class OrganizerTests(unittest.TestCase):
             self.assertEqual(Path(by_name["PowerShell"].destination).parts[-3:-1], ("projetos", "automacao_codigo"))
             self.assertEqual(Path(by_name["Atividade 01.docx"].destination).parts[-3:-1], ("recursos", "estudos"))
 
+    def test_scan_reports_file_and_directory_composition_with_duplicates_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / "docs"
+            images = root / "imagens"
+            docs.mkdir()
+            images.mkdir()
+            (docs / "manual.pdf").write_text("a", encoding="utf-8")
+            (docs / "manual copia.pdf").write_text("a", encoding="utf-8")
+            (images / "foto.jpg").write_bytes(b"jpg")
+            (root / "solto.txt").write_text("txt", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=True)
+
+            self.assertEqual(scan.file_summary[".pdf"], 2)
+            self.assertEqual(scan.file_summary[".jpg"], 1)
+            self.assertEqual(scan.file_summary[".txt"], 1)
+            self.assertEqual(scan.directory_summary["docs"], 2)
+            self.assertEqual(scan.directory_summary["imagens"], 1)
+            self.assertEqual(scan.directory_summary["(raiz)"], 1)
+
     def test_apply_plan_moves_without_deleting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,6 +1,5 @@
-from arruma_dir.project_organizer import main
+from arruma_dir.project_cli import main
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
