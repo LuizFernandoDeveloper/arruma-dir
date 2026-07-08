@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Builds
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Local app output
+_arruma_dir/
+_duplicados/
+*.arruma-plan.json
+*.arruma-plan.csv
+reports/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Virtual envs
+.venv/
+venv/
+env/

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arruma-dir"
+version = "0.1.0"
+description = "Organizador seguro de diretorios para Windows, com GUI, CLI e pre-visualizacao."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Luiz Fernando" }
+]
+keywords = ["windows", "organizador", "documentos", "duplicados", "tkinter"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Desktop Environment :: File Managers",
+  "Topic :: Utilities"
+]
+dependencies = []
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+arruma-dir = "arruma_dir.cli:main"
+arruma-projetos = "arruma_dir.project_organizer:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
