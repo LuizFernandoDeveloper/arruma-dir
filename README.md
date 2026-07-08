@@ -109,6 +109,10 @@ Ou simplesmente:
 arruma-dir
 ```
 
+Preview da UX atual:
+
+![Arruma Dir - nova interface](docs/images/arruma-dir-nova-ui.png)
+
 Na tela principal voce escolhe:
 
 - modo `Documentos / PARA`;

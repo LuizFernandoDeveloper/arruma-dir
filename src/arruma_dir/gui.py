@@ -35,12 +35,20 @@ from .safety import SafetyCheck, check_organization_root
 MODE_DOCUMENTS = "documents"
 MODE_PROJECTS = "projects"
 
+APP_BG = "#f5f7fb"
+HEADER_BG = "#172033"
+HEADER_FG = "#f8fafc"
+MUTED_FG = "#64748b"
+PANEL_BG = "#ffffff"
+ACCENT = "#2563eb"
+
 
 class ArrumaDirApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Arruma Dir")
-        self.minsize(1120, 700)
+        self.minsize(1180, 760)
+        self.configure(bg=APP_BG)
         self.scan_result: ScanResult | None = None
         self.project_report: ProjectReport | None = None
         self.active_mode: str | None = None
@@ -58,23 +66,73 @@ class ArrumaDirApp(tk.Tk):
         self.external_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Pronto")
         self.safety_var = tk.StringVar(value="Escolha o local, gere uma previa e revise antes de aplicar.")
+        self.next_step_var = tk.StringVar(value="1. Escolha o modo e a pasta. 2. Gere a previa. 3. Revise antes de aplicar.")
+        self.summary_vars = {
+            "planned": tk.StringVar(value="0"),
+            "duplicates": tk.StringVar(value="0"),
+            "possible": tk.StringVar(value="0"),
+            "external": tk.StringVar(value="0"),
+            "errors": tk.StringVar(value="0"),
+        }
 
+        self._configure_style()
         self._build_layout()
         self._update_mode_controls()
         self._set_action_buttons()
         self.after(120, self._poll_queue)
 
+    def _configure_style(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", font=("Segoe UI", 9))
+        style.configure("TFrame", background=APP_BG)
+        style.configure("Panel.TFrame", background=PANEL_BG, relief="flat")
+        style.configure("TLabel", background=APP_BG, foreground="#0f172a")
+        style.configure("Muted.TLabel", background=APP_BG, foreground=MUTED_FG)
+        style.configure("Panel.TLabel", background=PANEL_BG, foreground="#0f172a")
+        style.configure("PanelMuted.TLabel", background=PANEL_BG, foreground=MUTED_FG)
+        style.configure("Title.TLabel", background=HEADER_BG, foreground=HEADER_FG, font=("Segoe UI Semibold", 18))
+        style.configure("Subtitle.TLabel", background=HEADER_BG, foreground="#cbd5e1", font=("Segoe UI", 9))
+        style.configure("StatValue.TLabel", background=PANEL_BG, foreground="#0f172a", font=("Segoe UI Semibold", 18))
+        style.configure("StatLabel.TLabel", background=PANEL_BG, foreground=MUTED_FG, font=("Segoe UI", 8))
+        style.configure("TLabelframe", background=APP_BG, bordercolor="#d8dee9", relief="solid")
+        style.configure("TLabelframe.Label", background=APP_BG, foreground="#334155", font=("Segoe UI Semibold", 9))
+        style.configure("TButton", padding=(10, 6))
+        style.configure("Primary.TButton", padding=(14, 7), foreground="#ffffff", background=ACCENT)
+        style.map("Primary.TButton", background=[("active", "#1d4ed8"), ("disabled", "#94a3b8")])
+        style.configure("Treeview", rowheight=26, font=("Segoe UI", 9), bordercolor="#e2e8f0", fieldbackground="#ffffff")
+        style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9), background="#e8edf5", foreground="#0f172a")
+
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
 
-        top = ttk.Frame(self, padding=(12, 12, 12, 8))
-        top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(1, weight=1)
+        header = tk.Frame(self, bg=HEADER_BG, padx=18, pady=14)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="Arruma Dir", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text="Organizacao segura para Documentos e Projetos/CAD, sempre com previa antes de mover.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(header, textvariable=self.status_var, style="Subtitle.TLabel").grid(row=0, column=1, rowspan=2, sticky="e")
 
-        ttk.Label(top, text="Modo").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        mode_box = ttk.Frame(top)
-        mode_box.grid(row=0, column=1, columnspan=2, sticky="w")
+        control_area = ttk.Frame(self, padding=(12, 12, 12, 8))
+        control_area.grid(row=1, column=0, sticky="ew")
+        control_area.columnconfigure(0, weight=3)
+        control_area.columnconfigure(1, weight=2)
+        control_area.columnconfigure(2, weight=2)
+
+        source_box = ttk.LabelFrame(control_area, text="1. Modo e local", padding=(12, 10))
+        source_box.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        source_box.columnconfigure(1, weight=1)
+
+        mode_box = ttk.Frame(source_box)
+        mode_box.grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Radiobutton(
             mode_box,
             text="Documentos / PARA",
@@ -90,49 +148,73 @@ class ArrumaDirApp(tk.Tk):
             command=self._on_mode_changed,
         ).pack(side="left", padx=(18, 0))
 
-        ttk.Label(top, text="Local").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        path_entry = ttk.Entry(top, textvariable=self.path_var)
-        path_entry.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        ttk.Button(top, text="Escolher", command=self.choose_directory).grid(row=1, column=2, padx=(8, 0), pady=(8, 0))
+        ttk.Label(source_box, text="Local").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+        path_entry = ttk.Entry(source_box, textvariable=self.path_var)
+        path_entry.grid(row=1, column=1, sticky="ew", pady=(10, 0))
+        ttk.Button(source_box, text="Escolher", command=self.choose_directory).grid(row=1, column=2, padx=(8, 0), pady=(10, 0))
+        ttk.Label(source_box, textvariable=self.safety_var, style="PanelMuted.TLabel", wraplength=520).grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(8, 0),
+        )
 
-        safety = ttk.Frame(self, padding=(12, 0, 12, 8))
-        safety.grid(row=1, column=0, sticky="ew")
-        safety.columnconfigure(0, weight=1)
-        ttk.Label(safety, textvariable=self.safety_var, foreground="#5b4b00").grid(row=0, column=0, sticky="w")
-
-        options = ttk.Frame(self, padding=(12, 0, 12, 8))
-        options.grid(row=2, column=0, sticky="ew")
-        options.columnconfigure(5, weight=1)
+        options = ttk.LabelFrame(control_area, text="2. Opcoes da previa", padding=(12, 10))
+        options.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
 
         self.compat_check = ttk.Checkbutton(options, text="Nomes compativeis", variable=self.compat_var)
         self.compat_check.grid(row=0, column=0, sticky="w")
         self.duplicates_check = ttk.Checkbutton(options, text="Buscar repetidos", variable=self.duplicates_var)
-        self.duplicates_check.grid(row=0, column=1, sticky="w", padx=(18, 0))
+        self.duplicates_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.full_duplicates_check = ttk.Checkbutton(
             options,
             text="Duplicatas completas (lento)",
             variable=self.full_duplicates_var,
         )
-        self.full_duplicates_check.grid(row=0, column=2, sticky="w", padx=(18, 0))
+        self.full_duplicates_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.cad_duplicates_check = ttk.Checkbutton(
             options,
             text="Incluir duplicatas CAD",
             variable=self.cad_duplicates_var,
         )
-        self.cad_duplicates_check.grid(row=0, column=3, sticky="w", padx=(18, 0))
+        self.cad_duplicates_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.external_check = ttk.Checkbutton(options, text="Vasculhar HDs externos", variable=self.external_var)
-        self.external_check.grid(row=0, column=4, sticky="w", padx=(18, 0))
+        self.external_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
 
-        self.scan_button = ttk.Button(options, text="Gerar previa", command=self.scan)
-        self.scan_button.grid(row=0, column=6, sticky="e")
-        self.export_button = ttk.Button(options, text="Exportar JSON", command=self.export_json)
-        self.export_button.grid(row=0, column=7, sticky="e", padx=(8, 0))
-        self.move_selected_button = ttk.Button(options, text="Mover selecionado", command=self.move_selected_duplicate)
-        self.move_selected_button.grid(row=0, column=8, sticky="e", padx=(8, 0))
-        self.move_duplicates_button = ttk.Button(options, text="Mover duplicatas", command=self.move_duplicates)
-        self.move_duplicates_button.grid(row=0, column=9, sticky="e", padx=(8, 0))
-        self.apply_button = ttk.Button(options, text="Aplicar organizacao", command=self.apply_organization)
-        self.apply_button.grid(row=0, column=10, sticky="e", padx=(8, 0))
+        actions = ttk.LabelFrame(control_area, text="3. Acoes", padding=(12, 10))
+        actions.grid(row=0, column=2, sticky="nsew")
+        actions.columnconfigure(0, weight=1)
+
+        self.scan_button = ttk.Button(actions, text="Gerar previa", command=self.scan, style="Primary.TButton")
+        self.scan_button.grid(row=0, column=0, sticky="ew")
+        self.export_button = ttk.Button(actions, text="Exportar JSON", command=self.export_json)
+        self.export_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.move_selected_button = ttk.Button(actions, text="Mover item selecionado", command=self.move_selected_duplicate)
+        self.move_selected_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.move_duplicates_button = ttk.Button(actions, text="Mover duplicatas seguras", command=self.move_duplicates)
+        self.move_duplicates_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
+        self.apply_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+
+        summary = ttk.Frame(self, padding=(12, 0, 12, 10))
+        summary.grid(row=2, column=0, sticky="ew")
+        summary.columnconfigure(5, weight=1)
+        self._make_stat(summary, "Planejados", self.summary_vars["planned"], 0)
+        self._make_stat(summary, "Duplicatas", self.summary_vars["duplicates"], 1)
+        self._make_stat(summary, "Possiveis", self.summary_vars["possible"], 2)
+        self._make_stat(summary, "Externos", self.summary_vars["external"], 3)
+        self._make_stat(summary, "Erros", self.summary_vars["errors"], 4)
+        next_box = ttk.Frame(summary, style="Panel.TFrame", padding=(12, 8))
+        next_box.grid(row=0, column=5, sticky="ew", padx=(8, 0))
+        next_box.columnconfigure(0, weight=1)
+        ttk.Label(next_box, text="Proximo passo", style="PanelMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(next_box, textvariable=self.next_step_var, style="Panel.TLabel", wraplength=460).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(2, 0),
+        )
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
@@ -159,6 +241,35 @@ class ArrumaDirApp(tk.Tk):
         status.grid(row=4, column=0, sticky="ew")
         status.columnconfigure(0, weight=1)
         ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+
+    def _make_stat(self, parent: ttk.Frame, label: str, value: tk.StringVar, column: int) -> None:
+        box = ttk.Frame(parent, style="Panel.TFrame", padding=(12, 8), width=130, height=70)
+        box.grid(row=0, column=column, sticky="ew", padx=(0, 8))
+        box.grid_propagate(False)
+        ttk.Label(box, textvariable=value, style="StatValue.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(box, text=label, style="StatLabel.TLabel").grid(row=1, column=0, sticky="w")
+
+    def _reset_summary(self) -> None:
+        for value in self.summary_vars.values():
+            value.set("0")
+        self.next_step_var.set("1. Escolha o modo e a pasta. 2. Gere a previa. 3. Revise antes de aplicar.")
+
+    def _set_summary(
+        self,
+        *,
+        planned: int,
+        duplicates: int,
+        possible: int,
+        external: int,
+        errors: int,
+        next_step: str,
+    ) -> None:
+        self.summary_vars["planned"].set(str(planned))
+        self.summary_vars["duplicates"].set(str(duplicates))
+        self.summary_vars["possible"].set(str(possible))
+        self.summary_vars["external"].set(str(external))
+        self.summary_vars["errors"].set(str(errors))
+        self.next_step_var.set(next_step)
 
     def _make_tree(self, parent: ttk.Notebook, columns: tuple[str, ...], headings: tuple[str, ...]) -> ttk.Treeview:
         frame = ttk.Frame(parent)
@@ -192,6 +303,7 @@ class ArrumaDirApp(tk.Tk):
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
         self.duplicate_rows.clear()
+        self._reset_summary()
         self._update_mode_controls()
         self._set_action_buttons()
         self.status_var.set("Pronto")
@@ -297,6 +409,7 @@ class ArrumaDirApp(tk.Tk):
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
         self.duplicate_rows.clear()
+        self._reset_summary()
 
         thread = threading.Thread(
             target=self._scan_worker,
@@ -602,6 +715,14 @@ class ArrumaDirApp(tk.Tk):
             f"{stats['possible_duplicate_groups']} possiveis, "
             f"{stats['errors']} erros"
         )
+        self._set_summary(
+            planned=stats["planned_moves"],
+            duplicates=stats["exact_duplicate_groups"],
+            possible=stats["possible_duplicate_groups"],
+            external=0,
+            errors=stats["errors"],
+            next_step="Revise as abas Plano e Repetidos. Depois exporte o JSON ou aplique apenas se tudo estiver correto.",
+        )
         self._append_log(f"Previa concluida: {result.root}")
         for skipped in result.skipped:
             self._append_log(f"Aviso: {skipped}")
@@ -664,6 +785,14 @@ class ArrumaDirApp(tk.Tk):
             f"{stats['external_candidates']} candidatos externos, "
             f"{stats['errors']} erros"
         )
+        self._set_summary(
+            planned=stats["organization_moves"],
+            duplicates=stats["duplicate_moves"],
+            possible=0,
+            external=stats["external_candidates"],
+            errors=stats["errors"],
+            next_step="Revise o plano de Projetos/CAD. Aplique somente depois de confirmar que nenhuma arvore CAD sera quebrada.",
+        )
         self._append_log(f"Previa de projetos concluida: {report.root}")
         for warning in report.warnings:
             self._append_log(f"Aviso: {warning}")
@@ -680,6 +809,7 @@ class ArrumaDirApp(tk.Tk):
         }
         label = labels.get(event, "Acao")
         self.status_var.set(f"{label}: {len(result.moved)} movimentos, {len(result.errors)} erros")
+        self.next_step_var.set("Acao concluida. Gere uma nova previa para validar o estado atual da pasta.")
         self._append_log(f"{label}: {len(result.moved)} movimentos")
         for source, destination in result.moved[:80]:
             self._append_log(f"{source} -> {destination}")
@@ -696,6 +826,7 @@ class ArrumaDirApp(tk.Tk):
         errors = result.get("errors", [])
         skipped = result.get("skipped", [])
         self.status_var.set(f"Projetos: {len(moved)} movimentos, {len(copied)} copias, {len(errors)} erros")
+        self.next_step_var.set("Acao de Projetos/CAD concluida. Gere nova previa antes de aplicar outro lote.")
         self._append_log(f"Projetos: {len(moved)} movimentos, {len(copied)} copias")
         for item in moved[:80]:
             self._append_log(item)
