@@ -12,6 +12,38 @@ O projeto nasceu para resolver dois cenarios reais:
 - organizar `C:\Users\luizf\OneDrive\Documentos` sem quebrar pastas criadas por programas;
 - organizar `F:\projetos` seguindo padroes Ramtech/Macrotec e Opcao Industrial, preservando SolidWorks, SolidWorks Electrical, EPLAN e AutoCAD.
 
+## Sumario
+
+- [Visao Geral](#visao-geral)
+- [Principios](#principios)
+- [Gates de seguranca](#gates-de-seguranca)
+- [Experiencia de operacao](#experiencia-de-operacao)
+- [Interface grafica](#interface-grafica)
+- [Instalacao](#instalacao)
+- [Uso rapido](#uso-rapido)
+- [Comandos principais](#comandos-principais)
+- [Modo Documentos / PARA](#modo-documentos--para)
+- [Modo Projetos / CAD](#modo-projetos--cad)
+- [Protecao CAD](#protecao-cad)
+- [Duplicatas](#duplicatas)
+- [Troubleshooting](#troubleshooting)
+- [Build do executavel](#build-do-executavel)
+- [Testes](#testes)
+- [Estrutura do repositorio](#estrutura-do-repositorio)
+- [Disciplina de commits](#disciplina-de-commits)
+- [Licenca](#licenca)
+
+## Visao Geral
+
+Area | Entrega
+--- | ---
+Documentos | Organiza arquivos pessoais pelo metodo PARA
+Projetos | Classifica materiais de engenharia em uma estrutura mais legivel
+Duplicatas | Detecta repetidos exatos por tamanho e SHA-256
+CAD | Preserva arvores SolidWorks, Electrical, EPLAN e AutoCAD
+Interface | GUI com selecao de local, previa e confirmacao digitada
+Automacao | CLI para scans, relatorios, dedupe e build de `.exe`
+
 ## Principios
 
 O `arruma-dir` foi feito para trabalhar com seguranca antes de trabalhar com velocidade.
@@ -23,6 +55,29 @@ O `arruma-dir` foi feito para trabalhar com seguranca antes de trabalhar com vel
 - Duplicatas sao comparadas por tamanho e SHA-256, nao apenas pelo nome.
 - Arquivos parecidos, mas diferentes, ficam para decisao manual.
 - Arvores CAD sao preservadas para nao quebrar referencias internas.
+
+## Gates de seguranca
+
+Gate | O que bloqueia | Motivo
+--- | --- | ---
+Local | Raiz de disco e pastas de sistema | Evita operacao ampla demais ou perigosa
+Previa | Aplicacao sem plano revisado | Toda mudanca precisa ser visivel antes
+Confirmacao | Movimento real sem digitar `APLICAR` ou `MOVER` | Evita clique acidental
+Raiz alterada | Aplicar depois de trocar o caminho | O plano vale apenas para a pasta escaneada
+Duplicata incerta | Nome parecido com conteudo diferente | Mantem no lugar ate decisao manual
+CAD | Arquivos internos de projeto CAD | Preserva referencias, caminhos relativos e metadados
+
+## Experiencia de operacao
+
+A saida e tratada como interface de trabalho. O objetivo e mostrar estado, risco e proximo passo sem esconder decisao importante.
+
+Estado | Como ler
+--- | ---
+Previa | Nada foi movido; revise plano, repetidos e avisos
+Aviso | Algo merece atencao, mas a analise continuou
+Erro | A operacao parou ou aquele item nao foi processado
+Quarentena | Arquivo movido para area separada, sem exclusao
+CAD protegido | O item foi preservado para nao quebrar referencia
 
 ## Recursos principais
 
@@ -121,6 +176,20 @@ Usar nomes mais compativeis com scripts e automacoes:
 ```powershell
 arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --compat-names --json plano.arruma-plan.json
 ```
+
+## Comandos principais
+
+Objetivo | Comando
+--- | ---
+Abrir interface | `arruma-dir`
+Previa de Documentos | `arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --json plano.json`
+Aplicar plano revisado | `arruma-dir apply "C:\Users\luizf\OneDrive\Documentos" --plan plano.json --yes`
+Mover duplicatas seguras | `arruma-dir dedupe "C:\Users\luizf\OneDrive\Documentos" --yes`
+Previa de projetos | `arruma-projetos scan --root "F:\projetos"`
+Projetos com HD externo | `arruma-projetos scan --root "F:\projetos" --external`
+Aplicar organizacao de projetos | `arruma-projetos apply --report RELATORIO.json --organize --yes`
+Quarentena de duplicatas de projetos | `arruma-projetos apply --report RELATORIO.json --duplicates --yes`
+Gerar executavel | `.\scripts\build_exe.ps1`
 
 ## Modo Documentos / PARA
 
@@ -272,6 +341,49 @@ nome parecido, mas tamanho, extensao, data ou conteudo diferente
 
 Duplicatas exatas podem ser movidas para quarentena. Possiveis duplicatas ficam no lugar para decisao manual.
 
+## Troubleshooting
+
+### A interface nao abre
+
+Confirme se o pacote esta instalado em modo desenvolvimento:
+
+```powershell
+python -m pip install -e .
+arruma-dir gui
+```
+
+### O botao de aplicar esta bloqueado
+
+Gere uma previa primeiro. Se voce trocou o local depois da previa, gere outra previa para aquele novo caminho.
+
+### O scan de duplicatas ficou pesado
+
+Use a interface com `Buscar repetidos` desmarcado ou rode pelo terminal sem duplicatas:
+
+```powershell
+arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --no-duplicates
+```
+
+### Arquivo CAD nao entrou como duplicata
+
+Isso e esperado. O modo Projetos/CAD protege arquivos internos de SolidWorks, Electrical, EPLAN e AutoCAD por padrao.
+
+Para apenas revisar no relatorio:
+
+```powershell
+arruma-projetos scan --root "F:\projetos" --include-cad-duplicates
+```
+
+### O GitHub Actions falhou
+
+Rode localmente:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+python -m compileall src tests scripts
+```
+
 ## Build do executavel
 
 Instale dependencias de build:
@@ -331,6 +443,27 @@ arruma-dir
 `-- pyproject.toml
 ```
 
+## Disciplina de commits
+
+O projeto segue uma regra simples: uma mudanca coerente por commit, diff revisado antes de gravar e nada de misturar refactor, feature e documentacao sem necessidade.
+
+Fluxo recomendado:
+
+```powershell
+git status
+git diff
+git add README.md
+git diff --staged
+git commit -m "docs: ajusta readme operacional"
+```
+
+Para mudancas grandes, prefira separar:
+
+- codigo;
+- testes;
+- documentacao;
+- build/release.
+
 ## Publicacao inicial no GitHub
 
 Para criar o repositorio local e subir para o GitHub:
@@ -355,6 +488,15 @@ git push -u origin main
 ## Aviso importante
 
 Mesmo com travas de seguranca, organizacao de arquivos e uma operacao sensivel. Revise a previa antes de aplicar e mantenha backup dos dados importantes.
+
+## Referencias
+
+- [Backup_wsl-](https://github.com/LuizFernandoDeveloper/Backup_wsl-) como referencia de README operacional, gates e documentacao por fluxo.
+- [wsl-vhd-automount](https://github.com/LuizFernandoDeveloper/wsl-vhd-automount) como referencia de comandos, diagnostico, troubleshooting e disciplina de operacao.
+- [PARA Method](https://fortelabs.com/blog/para/) para a organizacao de documentos pessoais.
+- [SolidWorks Pack and Go](https://help.solidworks.com/2023/english/SolidWorks/sldworks/c_pack_go_ovw_wpdm.htm) para preservar arquivos relacionados de modelos, montagens e desenhos.
+- [SolidWorks Electrical Archive](https://help.solidworks.com/2026/english/swelec/r_swelec_archive_electrical_project.htm) para projetos arquivados e `.PROJ.TEWZIP`.
+- [AutoCAD Xrefs](https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-Core/files/GUID-164C2548-91E6-476D-AFDF-6257340C2EE2.htm) para cuidado com referencias e caminhos relativos.
 
 ## Licenca
 
