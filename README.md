@@ -55,6 +55,7 @@ O `arruma-dir` foi feito para trabalhar com seguranca antes de trabalhar com vel
 - Duplicatas sao comparadas por tamanho e SHA-256, nao apenas pelo nome.
 - Arquivos parecidos, mas diferentes, ficam para decisao manual.
 - Arvores CAD sao preservadas para nao quebrar referencias internas.
+- Logs completos sao gerados em arquivo para auditoria da execucao.
 
 ## Gates de seguranca
 
@@ -78,6 +79,7 @@ Aviso | Algo merece atencao, mas a analise continuou
 Erro | A operacao parou ou aquele item nao foi processado
 Quarentena | Arquivo movido para area separada, sem exclusao
 CAD protegido | O item foi preservado para nao quebrar referencia
+Log completo | Arquivo `.log` com plano, avisos, erros e detalhes da execucao
 
 ## Recursos principais
 
@@ -171,6 +173,8 @@ Rodar varredura completa de duplicatas:
 arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --full-duplicates --json plano.arruma-plan.json
 ```
 
+No modo rapido, arquivos acima de `512 MB` nao tem hash calculado para duplicatas e a busca pode parar apos `90s`. Isso protege a interface contra travamento. Para incluir arquivos grandes, use `--full-duplicates` ou marque `Duplicatas completas (lento)` na interface.
+
 Usar nomes mais compativeis com scripts e automacoes:
 
 ```powershell
@@ -183,6 +187,8 @@ Objetivo | Comando
 --- | ---
 Abrir interface | `arruma-dir`
 Previa de Documentos | `arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --json plano.json`
+Previa detalhada no terminal | `arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --verbose`
+Previa com hash de arquivos grandes | `arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --full-duplicates`
 Aplicar plano revisado | `arruma-dir apply "C:\Users\luizf\OneDrive\Documentos" --plan plano.json --yes`
 Mover duplicatas seguras | `arruma-dir dedupe "C:\Users\luizf\OneDrive\Documentos" --yes`
 Previa de projetos | `arruma-projetos scan --root "F:\projetos"`
@@ -362,6 +368,31 @@ Use a interface com `Buscar repetidos` desmarcado ou rode pelo terminal sem dupl
 
 ```powershell
 arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --no-duplicates
+```
+
+### O aviso diz que arquivos grandes nao foram hasheados
+
+Isso nao significa que o arquivo foi ignorado pela organizacao. Significa apenas que, no modo rapido de duplicatas, o programa nao calculou SHA-256 daquele arquivo grande.
+
+Para olhar arquivos grandes tambem:
+
+```powershell
+arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --full-duplicates --verbose
+```
+
+### Quero ver a execucao completa
+
+Todo scan/aplicacao gera um `.log` dentro da pasta de estado:
+
+```text
+_arruma_dir\logs
+_arruma_projetos\logs
+```
+
+No terminal, use:
+
+```powershell
+arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --verbose
 ```
 
 ### Arquivo CAD nao entrou como duplicata

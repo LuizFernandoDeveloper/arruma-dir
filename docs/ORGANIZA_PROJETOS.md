@@ -92,6 +92,18 @@ O relatorio fica em:
 F:\projetos\_arruma_projetos\reports
 ```
 
+O log completo da execucao fica em:
+
+```text
+F:\projetos\_arruma_projetos\logs
+```
+
+Para mostrar detalhes tambem no terminal:
+
+```powershell
+python scripts\organiza_projetos.py scan --root "F:\projetos" --verbose
+```
+
 ## Vasculhar HDs externos
 
 Somente drives removiveis por padrao:
@@ -129,6 +141,12 @@ python scripts\organiza_projetos.py apply --report "F:\projetos\_arruma_projetos
 ```
 
 Sem `--yes`, o comando simula.
+
+Para aplicar simulando e ver tudo no terminal:
+
+```powershell
+python scripts\organiza_projetos.py apply --report "F:\projetos\_arruma_projetos\reports\projetos-report-YYYYMMDD-HHMMSS.json" --organize --verbose
+```
 
 ## Criar template de projeto Ramtech
 

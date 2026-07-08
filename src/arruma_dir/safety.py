@@ -57,6 +57,10 @@ def check_organization_root(path: str | Path, *, mode: str) -> SafetyCheck:
 
     normalized_parts = {part.lower() for part in resolved.parts}
     if mode == "documents":
+        if (resolved / "organizar").is_dir() and (resolved / "projetos").is_dir():
+            check.errors.append(
+                "Esta pasta parece uma raiz de Projetos/CAD. Use o modo Projetos/CAD para evitar quebrar arvores de engenharia."
+            )
         if not {"documentos", "documents"}.intersection(normalized_parts):
             check.warnings.append("Modo Documentos/PARA foi pensado para uma pasta de documentos pessoais.")
     elif mode == "projects":

@@ -517,8 +517,16 @@ def is_generated_or_topic_dir(path: Path) -> bool:
     return lowered in GENERATED_DIRS or lowered in TOPIC_DIRS
 
 
+def is_internal_generated_dir(path: Path) -> bool:
+    return path.is_dir() and path.name.lower() in GENERATED_DIRS
+
+
 def is_protected_app_dir(path: Path) -> bool:
     return path.is_dir() and is_protected_app_dir_name(path.name)
+
+
+def looks_like_projects_cad_root(path: Path) -> bool:
+    return (path / "organizar").is_dir() and (path / "projetos").is_dir()
 
 
 def classify_entry(path: Path) -> tuple[Topic, str]:
@@ -605,9 +613,18 @@ def scan_directory(
 
     result = ScanResult(root=str(root_path), generated_at=utc_now())
 
+    if looks_like_projects_cad_root(root_path):
+        result.errors.append(
+            "raiz parece um ambiente de Projetos/CAD com pastas 'organizar' e 'projetos'; "
+            "use o modo Projetos/CAD ou o comando arruma-projetos"
+        )
+        return result
+
     for entry in sorted(root_path.iterdir(), key=lambda item: item.name.lower()):
         if should_skip_name(entry.name):
             result.skipped.append(str(entry))
+            continue
+        if is_internal_generated_dir(entry):
             continue
         if is_generated_or_topic_dir(entry):
             result.skipped.append(str(entry))
@@ -795,7 +812,10 @@ def find_duplicate_files(
 
     for index, path in enumerate(iter_files(root_path), start=1):
         if expired():
-            result.skipped.append(f"limite de tempo atingido na busca de repetidos: {time_limit_seconds}s")
+            result.skipped.append(
+                f"duplicatas: limite de tempo atingido na listagem/hash rapido: {time_limit_seconds}s; "
+                "use --full-duplicates para varredura completa"
+            )
             break
         if max_files is not None and index > max_files:
             result.skipped.append(f"limite de arquivos atingido na busca de repetidos: {max_files}")
@@ -815,19 +835,26 @@ def find_duplicate_files(
 
     if skipped_large:
         result.skipped.append(
-            f"{skipped_large} arquivos ignorados por tamanho acima de {max_file_size_mb} MB"
+            f"duplicatas: {skipped_large} arquivo(s) acima de {max_file_size_mb} MB nao foram hasheados "
+            "no modo rapido; use --full-duplicates para incluir arquivos grandes"
         )
 
     for size, candidates in by_size.items():
         if expired():
-            result.skipped.append(f"limite de tempo atingido durante hash: {time_limit_seconds}s")
+            result.skipped.append(
+                f"duplicatas: limite de tempo atingido durante hash rapido: {time_limit_seconds}s; "
+                "use --full-duplicates para varredura completa"
+            )
             break
         if len(candidates) < 2:
             continue
         by_hash: dict[str, list[str]] = {}
         for path in candidates:
             if expired():
-                result.skipped.append(f"limite de tempo atingido durante hash: {time_limit_seconds}s")
+                result.skipped.append(
+                    f"duplicatas: limite de tempo atingido durante hash rapido: {time_limit_seconds}s; "
+                    "use --full-duplicates para varredura completa"
+                )
                 break
             try:
                 digest = file_sha256(path)

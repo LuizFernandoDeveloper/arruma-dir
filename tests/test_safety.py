@@ -37,6 +37,17 @@ class SafetyTests(unittest.TestCase):
             self.assertTrue(check.ok)
             self.assertTrue(any("Documentos/PARA" in warning for warning in check.warnings))
 
+    def test_documents_mode_blocks_projects_cad_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "organizar").mkdir()
+            (root / "projetos").mkdir()
+
+            check = check_organization_root(root, mode="documents")
+
+            self.assertFalse(check.ok)
+            self.assertTrue(any("Projetos/CAD" in error for error in check.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

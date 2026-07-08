@@ -127,6 +127,36 @@ class OrganizerTests(unittest.TestCase):
             self.assertIn("PowerShell", planned_names)
             self.assertTrue(any("pasta gerenciada por programa" in item for item in scan.skipped))
 
+    def test_projects_cad_root_is_not_scanned_as_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "organizar").mkdir()
+            (root / "projetos").mkdir()
+
+            scan = scan_directory(root, include_duplicates=False)
+
+            self.assertEqual(scan.plan, [])
+            self.assertTrue(any("Projetos/CAD" in item for item in scan.errors))
+
+    def test_internal_state_dirs_are_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "_arruma_dir").mkdir()
+            (root / "_duplicados").mkdir()
+
+            scan = scan_directory(root, include_duplicates=False)
+
+            self.assertEqual(scan.skipped, [])
+
+    def test_large_files_are_not_hashed_in_fast_duplicate_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "grande.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+
+            duplicate_scan = find_duplicate_files(root, max_file_size_mb=1)
+
+            self.assertTrue(any("nao foram hasheados" in item for item in duplicate_scan.skipped))
+
     def test_exact_duplicate_without_copy_marker_is_kept_for_manual_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from .logging_utils import close_logger, create_operation_logger
 from .organizer import (
     ApplyResult,
     ScanResult,
@@ -52,6 +53,7 @@ class ArrumaDirApp(tk.Tk):
         self.path_var = tk.StringVar(value=str(default_documents_path()))
         self.compat_var = tk.BooleanVar(value=False)
         self.duplicates_var = tk.BooleanVar(value=True)
+        self.full_duplicates_var = tk.BooleanVar(value=False)
         self.cad_duplicates_var = tk.BooleanVar(value=False)
         self.external_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Pronto")
@@ -106,14 +108,20 @@ class ArrumaDirApp(tk.Tk):
         self.compat_check.grid(row=0, column=0, sticky="w")
         self.duplicates_check = ttk.Checkbutton(options, text="Buscar repetidos", variable=self.duplicates_var)
         self.duplicates_check.grid(row=0, column=1, sticky="w", padx=(18, 0))
+        self.full_duplicates_check = ttk.Checkbutton(
+            options,
+            text="Duplicatas completas (lento)",
+            variable=self.full_duplicates_var,
+        )
+        self.full_duplicates_check.grid(row=0, column=2, sticky="w", padx=(18, 0))
         self.cad_duplicates_check = ttk.Checkbutton(
             options,
             text="Incluir duplicatas CAD",
             variable=self.cad_duplicates_var,
         )
-        self.cad_duplicates_check.grid(row=0, column=2, sticky="w", padx=(18, 0))
+        self.cad_duplicates_check.grid(row=0, column=3, sticky="w", padx=(18, 0))
         self.external_check = ttk.Checkbutton(options, text="Vasculhar HDs externos", variable=self.external_var)
-        self.external_check.grid(row=0, column=3, sticky="w", padx=(18, 0))
+        self.external_check.grid(row=0, column=4, sticky="w", padx=(18, 0))
 
         self.scan_button = ttk.Button(options, text="Gerar previa", command=self.scan)
         self.scan_button.grid(row=0, column=6, sticky="e")
@@ -191,11 +199,13 @@ class ArrumaDirApp(tk.Tk):
     def _update_mode_controls(self) -> None:
         if self.mode_var.get() == MODE_PROJECTS:
             self.compat_check.configure(state="disabled")
+            self.full_duplicates_check.configure(state="normal")
             self.cad_duplicates_check.configure(state="normal")
             self.external_check.configure(state="normal")
             self.safety_var.set("Projetos/CAD: arvores SolidWorks, Electrical, EPLAN e AutoCAD sao preservadas por padrao.")
         else:
             self.compat_check.configure(state="normal")
+            self.full_duplicates_check.configure(state="normal")
             self.cad_duplicates_check.configure(state="disabled")
             self.external_check.configure(state="disabled")
             self.safety_var.set("Documentos/PARA: gere uma previa, revise destinos e aplique somente com confirmacao.")
@@ -220,6 +230,14 @@ class ArrumaDirApp(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.path_var.get() or str(Path.home()))
         if selected:
             self.path_var.set(selected)
+            self._auto_select_mode_for_path()
+
+    def _auto_select_mode_for_path(self) -> None:
+        path = Path(self.path_var.get()).expanduser()
+        if (path / "organizar").is_dir() and (path / "projetos").is_dir() and self.mode_var.get() != MODE_PROJECTS:
+            self.mode_var.set(MODE_PROJECTS)
+            self._update_mode_controls()
+            self._append_log("Modo alterado para Projetos/CAD porque a raiz contem 'organizar' e 'projetos'.")
 
     def _check_current_root(self) -> SafetyCheck | None:
         path = self.path_var.get().strip()
@@ -267,6 +285,7 @@ class ArrumaDirApp(tk.Tk):
         if not path:
             messagebox.showwarning("Arruma Dir", "Escolha um diretorio.")
             return
+        self._auto_select_mode_for_path()
         if self._check_current_root() is None:
             return
 
@@ -286,6 +305,7 @@ class ArrumaDirApp(tk.Tk):
                 self.mode_var.get(),
                 self.compat_var.get(),
                 self.duplicates_var.get(),
+                self.full_duplicates_var.get(),
                 self.cad_duplicates_var.get(),
                 self.external_var.get(),
             ),
@@ -299,6 +319,7 @@ class ArrumaDirApp(tk.Tk):
         mode: str,
         compat_names: bool,
         include_duplicates: bool,
+        full_duplicates: bool,
         include_cad_duplicates: bool,
         external: bool,
     ) -> None:
@@ -308,12 +329,19 @@ class ArrumaDirApp(tk.Tk):
                     Path(path),
                     external=external,
                     no_hash=not include_duplicates,
+                    max_hash_size_mb=None if full_duplicates else 2048,
                     include_cad_duplicates=include_cad_duplicates,
                 )
                 self.work_queue.put(("project_scan_done", result))
                 return
 
-            result = scan_directory(path, compat_names=compat_names, include_duplicates=include_duplicates)
+            result = scan_directory(
+                path,
+                compat_names=compat_names,
+                include_duplicates=include_duplicates,
+                duplicate_time_limit=None if full_duplicates else 90.0,
+                duplicate_max_size_mb=None if full_duplicates else 512,
+            )
             self.work_queue.put(("scan_done", result))
         except Exception as exc:  # noqa: BLE001 - shown in GUI.
             self.work_queue.put(("error", exc))
@@ -579,6 +607,7 @@ class ArrumaDirApp(tk.Tk):
             self._append_log(f"Aviso: {skipped}")
         for error in result.errors:
             self._append_log(f"Erro: {error}")
+        self._write_document_scan_log(result)
         self._finish_busy()
 
     def _on_project_scan_done(self, report: ProjectReport) -> None:
@@ -640,6 +669,7 @@ class ArrumaDirApp(tk.Tk):
             self._append_log(f"Aviso: {warning}")
         for error in report.errors:
             self._append_log(f"Erro: {error}")
+        self._write_project_scan_log(report)
         self._finish_busy()
 
     def _on_apply_done(self, result: ApplyResult, event: str) -> None:
@@ -657,6 +687,7 @@ class ArrumaDirApp(tk.Tk):
             self._append_log(f"Ignorado: {skipped}")
         for error in result.errors:
             self._append_log(f"Erro: {error}")
+        self._write_document_apply_log(result, label)
         self._finish_busy()
 
     def _on_project_apply_done(self, result: dict[str, list[str]]) -> None:
@@ -674,7 +705,130 @@ class ArrumaDirApp(tk.Tk):
             self._append_log(f"Ignorado: {item}")
         for item in errors:
             self._append_log(f"Erro: {item}")
+        self._write_project_apply_log(result)
         self._finish_busy()
+
+    def _write_document_scan_log(self, result: ScanResult) -> None:
+        logger, log_path = create_operation_logger(result.root, mode=MODE_DOCUMENTS, operation="gui-scan")
+        try:
+            logger.info("interface=gui modo=Documentos/PARA raiz=%s gerado_em=%s", result.root, result.generated_at)
+            for key, value in result.stats.items():
+                logger.info("stat.%s=%s", key, value)
+            for index, item in enumerate(result.plan, start=1):
+                logger.info(
+                    "plano[%04d] action=%s category=%s source=%s destination=%s reason=%s is_directory=%s size=%s",
+                    index,
+                    item.action,
+                    item.category,
+                    item.source,
+                    item.destination,
+                    item.reason,
+                    item.is_directory,
+                    item.size,
+                )
+            for index, group in enumerate(result.duplicates, start=1):
+                logger.info(
+                    "duplicata[%04d] kind=%s size=%s sha256=%s reason=%s differences=%s files=%s",
+                    index,
+                    group.kind,
+                    group.size,
+                    group.sha256,
+                    group.reason,
+                    "; ".join(group.differences),
+                    " | ".join(group.files),
+                )
+            for item in result.skipped:
+                logger.warning("%s", item)
+            for item in result.errors:
+                logger.error("%s", item)
+        finally:
+            close_logger(logger)
+        self._append_log(f"Log completo: {log_path}")
+
+    def _write_project_scan_log(self, report: ProjectReport) -> None:
+        logger, log_path = create_operation_logger(report.root, mode=MODE_PROJECTS, operation="gui-project-scan")
+        try:
+            logger.info("interface=gui modo=Projetos/CAD raiz=%s gerado_em=%s", report.root, report.generated_at)
+            for key, value in report.stats.items():
+                logger.info("stat.%s=%s", key, value)
+            for index, item in enumerate(report.organization, start=1):
+                logger.info(
+                    "organizacao[%04d] action=%s source=%s destination=%s reason=%s",
+                    index,
+                    item.action,
+                    item.source,
+                    item.destination,
+                    item.reason,
+                )
+            for index, item in enumerate(report.duplicates, start=1):
+                logger.info(
+                    "duplicata[%04d] size=%s sha256=%s source=%s keeper=%s destination=%s reason=%s",
+                    index,
+                    item.size,
+                    item.sha256,
+                    item.source,
+                    item.keeper,
+                    item.destination,
+                    item.reason,
+                )
+            for index, item in enumerate(report.external_candidates, start=1):
+                logger.info(
+                    "externo[%04d] score=%s drive=%s source=%s destination=%s reasons=%s size=%s",
+                    index,
+                    item.score,
+                    item.drive,
+                    item.source,
+                    item.destination,
+                    "; ".join(item.reasons),
+                    item.size,
+                )
+            for item in report.warnings:
+                logger.warning("%s", item)
+            for item in report.errors:
+                logger.error("%s", item)
+        finally:
+            close_logger(logger)
+        self._append_log(f"Log completo: {log_path}")
+
+    def _write_document_apply_log(self, result: ApplyResult, label: str) -> None:
+        if not self.active_root:
+            return
+        logger, log_path = create_operation_logger(self.active_root, mode=MODE_DOCUMENTS, operation="gui-apply")
+        try:
+            logger.info("interface=gui acao=%s movimentos=%s ignorados=%s erros=%s", label, len(result.moved), len(result.skipped), len(result.errors))
+            for source, destination in result.moved:
+                logger.info("move source=%s destination=%s", source, destination)
+            for item in result.skipped:
+                logger.warning("%s", item)
+            for item in result.errors:
+                logger.error("%s", item)
+        finally:
+            close_logger(logger)
+        self._append_log(f"Log completo: {log_path}")
+
+    def _write_project_apply_log(self, result: dict[str, list[str]]) -> None:
+        if not self.active_root:
+            return
+        logger, log_path = create_operation_logger(self.active_root, mode=MODE_PROJECTS, operation="gui-project-apply")
+        try:
+            logger.info(
+                "interface=gui acao=Projetos movimentos=%s copias=%s ignorados=%s erros=%s",
+                len(result.get("moved", [])),
+                len(result.get("copied", [])),
+                len(result.get("skipped", [])),
+                len(result.get("errors", [])),
+            )
+            for item in result.get("moved", []):
+                logger.info("move %s", item)
+            for item in result.get("copied", []):
+                logger.info("copy %s", item)
+            for item in result.get("skipped", []):
+                logger.warning("%s", item)
+            for item in result.get("errors", []):
+                logger.error("%s", item)
+        finally:
+            close_logger(logger)
+        self._append_log(f"Log completo: {log_path}")
 
     def _on_error(self, exc: object) -> None:
         self.status_var.set("Erro")
