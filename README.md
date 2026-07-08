@@ -1,132 +1,361 @@
-# Arruma Dir
+# arruma-dir
 
-Arruma Dir e um organizador seguro para a pasta Documentos do Windows. Ele usa o metodo PARA, cria uma previa, sugere destinos, padroniza nomes, encontra repetidos por hash e so move arquivos quando voce confirma.
+[![CI](https://github.com/LuizFernandoDeveloper/arruma-dir/actions/workflows/ci.yml/badge.svg)](https://github.com/LuizFernandoDeveloper/arruma-dir/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)](#)
 
-O alvo inicial do projeto e:
+Organizador seguro de diretorios para Windows, com interface grafica, linha de comando, previa obrigatoria, deteccao de duplicatas e protecao para arvores CAD.
 
-```text
-C:\Users\luizf\OneDrive\Documentos
-```
+O projeto nasceu para resolver dois cenarios reais:
 
-## O que ele faz
+- organizar `C:\Users\luizf\OneDrive\Documentos` sem quebrar pastas criadas por programas;
+- organizar `F:\projetos` seguindo padroes Ramtech/Macrotec e Opcao Industrial, preservando SolidWorks, SolidWorks Electrical, EPLAN e AutoCAD.
 
-- Organiza pelo metodo PARA: `projetos`, `areas`, `recursos`, `arquivo` e `entrada`.
-- Usa subpastas por contexto, como `projetos/automacao_codigo`, `areas/saude` e `recursos/engenharia`.
-- Remove prefixos numericos de pastas como `7 - Estudos` ou `10-engenharia`.
-- Mantem uma previa antes de qualquer mudanca real.
-- Protege pastas criadas por programas e jogos, como Battlefield, OneNote, Office, MATLAB, SolidWorks e Visual Studio.
-- Detecta repetidos exatos por tamanho + SHA-256, nao apenas pelo nome.
-- Marca possiveis repetidos quando o nome parece igual mas existe diferenca de tamanho, extensao, data ou conteudo.
-- Move em lote somente repetidos exatos com marcador claro de copia, como `(1)`, `Copia`, `copy` ou `duplicado`.
-- Mantem possiveis repetidos no lugar ate voce decidir.
-- Mantem repetidos exatos sem marcador de copia para decisao manual, evitando mexer em caches, demos e pastas de programa.
-- Tem interface grafica em Tkinter e comandos de terminal.
-- Pode ser empacotado como `.exe` com PyInstaller.
+## Principios
 
-## Instalar em modo desenvolvimento
+O `arruma-dir` foi feito para trabalhar com seguranca antes de trabalhar com velocidade.
 
-```powershell
-cd F:\codex\Arruma-dir
-python -m pip install -e .
-```
+- Nada e apagado automaticamente.
+- Toda organizacao comeca por uma previa.
+- A interface exige confirmacao digitada antes de mover arquivos.
+- Raiz de disco e pastas de sistema sao bloqueadas.
+- Duplicatas sao comparadas por tamanho e SHA-256, nao apenas pelo nome.
+- Arquivos parecidos, mas diferentes, ficam para decisao manual.
+- Arvores CAD sao preservadas para nao quebrar referencias internas.
 
-## Abrir a interface
+## Recursos principais
+
+- Interface grafica em Tkinter.
+- CLI para automacao e auditoria.
+- Organizacao de Documentos pelo metodo PARA:
+  `projetos`, `areas`, `recursos`, `arquivo` e `entrada`.
+- Remocao segura de prefixos numericos em nomes de pastas.
+- Classificacao por contexto, extensao e palavras-chave.
+- Relatorios em JSON e CSV.
+- Quarentena de duplicatas em `_duplicados`.
+- Script especifico para `F:\projetos`.
+- Varredura opcional de HDs externos em busca de materiais de projeto.
+- Build de executavel Windows com PyInstaller.
+
+## Interface grafica
+
+Abra a interface:
 
 ```powershell
 arruma-dir gui
 ```
 
-Sem argumentos, o app tambem abre a interface:
+Ou simplesmente:
 
 ```powershell
 arruma-dir
 ```
 
-Na interface voce escolhe:
+Na tela principal voce escolhe:
 
-- o modo `Documentos / PARA` ou `Projetos / CAD`;
-- a pasta raiz que sera organizada;
-- se a previa deve buscar repetidos;
-- no modo Projetos/CAD, se deve vasculhar HDs externos e se duplicatas CAD devem entrar no relatorio.
+- modo `Documentos / PARA`;
+- modo `Projetos / CAD`;
+- pasta raiz que sera analisada;
+- busca de duplicatas;
+- no modo Projetos/CAD, varredura de HDs externos;
+- no modo Projetos/CAD, inclusao ou nao de duplicatas CAD no relatorio.
 
-Por seguranca, a interface bloqueia raiz de disco e pastas de sistema, exige previa antes de aplicar e pede confirmacao digitada para qualquer movimentacao real.
+Fluxo seguro:
 
-## Gerar uma previa pelo terminal
+```text
+Escolher local -> Gerar previa -> Revisar plano -> Confirmar -> Aplicar
+```
+
+Se o local for alterado depois da previa, a interface obriga gerar uma nova previa antes de aplicar.
+
+## Instalacao
+
+Clone o repositorio:
+
+```powershell
+git clone https://github.com/LuizFernandoDeveloper/arruma-dir.git
+cd arruma-dir
+```
+
+Instale em modo desenvolvimento:
+
+```powershell
+python -m pip install -e .
+```
+
+Requisitos:
+
+- Windows
+- Python 3.10 ou superior
+- Tkinter, ja incluso na maioria das instalacoes Python para Windows
+
+## Uso rapido
+
+Gerar previa para Documentos:
 
 ```powershell
 arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --json plano.arruma-plan.json --csv plano.arruma-plan.csv
 ```
 
-Por padrao, a busca de repetidos usa limite de tempo e ignora arquivos muito grandes para a interface continuar responsiva. Para uma varredura completa:
-
-```powershell
-arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --full-duplicates --json plano.arruma-plan.json
-```
-
-Para nomes mais faceis de ler por scripts, use:
-
-```powershell
-arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --compat-names --json plano.arruma-plan.json
-```
-
-## Aplicar a organizacao
-
-Primeiro gere e revise o JSON. Depois rode:
+Aplicar um plano revisado:
 
 ```powershell
 arruma-dir apply "C:\Users\luizf\OneDrive\Documentos" --plan plano.arruma-plan.json --yes
 ```
 
-Sem `--yes`, o comando mostra uma simulacao.
-
-## Mover repetidos
+Mover somente duplicatas exatas consideradas seguras para lote:
 
 ```powershell
 arruma-dir dedupe "C:\Users\luizf\OneDrive\Documentos" --yes
 ```
 
-Somente copias exatas com marcador claro de copia vao para:
-
-```text
-C:\Users\luizf\OneDrive\Documentos\_duplicados
-```
-
-Arquivos parecidos com diferencas ficam na previa e no JSON para revisao manual.
-
-Para mover todos os duplicados exatos, inclusive os que nao tem marcador de copia, use:
+Rodar varredura completa de duplicatas:
 
 ```powershell
-arruma-dir dedupe "C:\Users\luizf\OneDrive\Documentos" --all-exact --yes
+arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --full-duplicates --json plano.arruma-plan.json
 ```
 
-## Organizar F:\projetos
+Usar nomes mais compativeis com scripts e automacoes:
 
-O projeto tambem inclui um script especifico para `F:\projetos`, aprendendo o padrao Ramtech/Macrotec e Opcao Industrial.
+```powershell
+arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --compat-names --json plano.arruma-plan.json
+```
+
+## Modo Documentos / PARA
+
+Este modo organiza uma pasta pessoal de documentos em areas de uso claro.
+
+Estrutura principal:
+
+```text
+Documentos
+|-- entrada
+|-- projetos
+|-- areas
+|-- recursos
+|-- arquivo
+`-- _duplicados
+```
+
+Exemplos de destino:
+
+```text
+projetos/automacao_codigo
+areas/saude
+areas/financas
+recursos/engenharia
+recursos/programacao
+arquivo
+```
+
+Pastas criadas por aplicativos, jogos e ferramentas ficam protegidas quando o programa reconhece risco de quebra.
+
+## Modo Projetos / CAD
+
+O modo `Projetos / CAD` foi criado para `F:\projetos`.
+
+Ele aprende e aplica uma organizacao mais conservadora para ambientes com engenharia, documentos de producao e CAD.
+
+Comando principal:
 
 ```powershell
 arruma-projetos scan --root "F:\projetos"
 ```
 
-Ele gera relatorio antes de mover qualquer coisa, procura duplicatas exatas e pode vasculhar HDs externos. Arvores de SolidWorks, SolidWorks Electrical, EPLAN e AutoCAD sao preservadas por padrao para nao quebrar referencias de CAD.
+O relatorio padrao fica em:
 
-Veja [docs/ORGANIZA_PROJETOS.md](docs/ORGANIZA_PROJETOS.md).
+```text
+F:\projetos\_arruma_projetos\reports
+```
 
-## Gerar o .exe
+Aplicar apenas organizacao revisada:
+
+```powershell
+arruma-projetos apply --report "F:\projetos\_arruma_projetos\reports\projetos-report-YYYYMMDD-HHMMSS.json" --organize --yes
+```
+
+Mover duplicatas exatas para quarentena:
+
+```powershell
+arruma-projetos apply --report "F:\projetos\_arruma_projetos\reports\projetos-report-YYYYMMDD-HHMMSS.json" --duplicates --yes
+```
+
+Vasculhar HDs externos:
+
+```powershell
+arruma-projetos scan --root "F:\projetos" --external
+```
+
+Importar candidatos encontrados em HD externo:
+
+```powershell
+arruma-projetos apply --report "F:\projetos\_arruma_projetos\reports\projetos-report-YYYYMMDD-HHMMSS.json" --import-external --yes
+```
+
+Mais detalhes em [docs/ORGANIZA_PROJETOS.md](docs/ORGANIZA_PROJETOS.md).
+
+## Padroes aprendidos
+
+### Ramtech / Macrotec
+
+O script reconhece o padrao documentado em materiais internos de industrializacao:
+
+```text
+1- Projeto Eletrico (Eplan)
+2- Projeto Eletrico (PDF)
+3- Projeto Eletrico (DWG)
+4- Projeto Mecanico
+5- Documentos Macrotec
+6- Referencias
+7- Fotos
+8- Documentos Inspecao
+9- Documentos Projetos
+10- Lista de Materiais Excel
+11- Lista de Plaquetas Excel
+12- Lista de Identificacoes Excel
+```
+
+Tambem separa documentos de politica, instrucao de trabalho, fluxograma, inspecao, fabricacao e caderno eletromecanico.
+
+### Opcao Industrial
+
+O script reconhece padroes de projeto mecanico e biblioteca:
+
+```text
+Projetos_Mecanicos
+Biblioteca_Componentes
+Biblioteca_Componentes/Itens_OP
+Catalogos
+Detalhamentos
+Templates_SolidWorks
+Cabos
+Referencias
+```
+
+Codigos como `OP-...`, pastas numericas e revisoes `REV00` ajudam na classificacao.
+
+## Protecao CAD
+
+Projetos CAD nao sao tratados como arquivos comuns.
+
+Por padrao, o sistema preserva arvores e metadados de:
+
+- SolidWorks: `.sldprt`, `.sldasm`, `.slddrw`, `.slddrt`, `.prtdot`, `.asmdot`, `.drwdot`
+- SolidWorks Electrical: `.project`, `.proj.tewzip`, `.tewzip`
+- EPLAN: `.zw1`, `.zw9`, `.elk`, `.edb`, `.epj`, `.ept`
+- AutoCAD: `.dwg`, `.dxf`, `.dwt`, `.dwl`, `.dwl2`, `.ctb`, `.stb`, `.pc3`, `.lin`, `.pat`, `.sv$`, `.ac$`
+
+Duplicatas dentro dessas arvores ficam fora da quarentena automatica, a menos que voce peça explicitamente:
+
+```powershell
+arruma-projetos scan --root "F:\projetos" --include-cad-duplicates
+```
+
+Use essa opcao apenas para revisar caso a caso.
+
+## Duplicatas
+
+O projeto separa duplicatas em dois grupos.
+
+Duplicata exata:
+
+```text
+mesmo tamanho + mesmo SHA-256
+```
+
+Possivel duplicata:
+
+```text
+nome parecido, mas tamanho, extensao, data ou conteudo diferente
+```
+
+Duplicatas exatas podem ser movidas para quarentena. Possiveis duplicatas ficam no lugar para decisao manual.
+
+## Build do executavel
+
+Instale dependencias de build:
+
+```powershell
+python -m pip install -e ".[build]"
+```
+
+Gere o `.exe`:
 
 ```powershell
 .\scripts\build_exe.ps1
 ```
 
-O executavel fica em:
+Saida:
 
 ```text
 dist\ArrumaDir\ArrumaDir.exe
 ```
 
-## Modelo de organizacao
+## Testes
 
-Veja [docs/MODELO_DE_ORGANIZACAO.md](docs/MODELO_DE_ORGANIZACAO.md).
+Rodar testes:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+```
+
+Compilar arquivos Python:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m compileall src tests scripts
+```
+
+## Estrutura do repositorio
+
+```text
+arruma-dir
+|-- .github/workflows/ci.yml
+|-- docs/
+|   |-- MODELO_DE_ORGANIZACAO.md
+|   `-- ORGANIZA_PROJETOS.md
+|-- scripts/
+|   |-- build_exe.ps1
+|   `-- organiza_projetos.py
+|-- src/arruma_dir/
+|   |-- cli.py
+|   |-- gui.py
+|   |-- organizer.py
+|   |-- project_organizer.py
+|   `-- safety.py
+|-- tests/
+|-- LICENSE
+|-- README.md
+`-- pyproject.toml
+```
+
+## Publicacao inicial no GitHub
+
+Para criar o repositorio local e subir para o GitHub:
+
+```powershell
+git init
+git add .
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/LuizFernandoDeveloper/arruma-dir.git
+git push -u origin main
+```
+
+Neste checkout, o repositorio ja possui commits locais. Para configurar o remoto e subir:
+
+```powershell
+git branch -M main
+git remote add origin https://github.com/LuizFernandoDeveloper/arruma-dir.git
+git push -u origin main
+```
+
+## Aviso importante
+
+Mesmo com travas de seguranca, organizacao de arquivos e uma operacao sensivel. Revise a previa antes de aplicar e mantenha backup dos dados importantes.
 
 ## Licenca
 
-MIT. Veja [LICENSE](LICENSE).
+Distribuido sob a licenca MIT. Veja [LICENSE](LICENSE).
