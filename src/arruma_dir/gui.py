@@ -6,12 +6,15 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
+if TYPE_CHECKING:
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
 
-from arruma_dir.hardware import DiskUsage, detect_hardware, disk_usage_for, normalize_performance_mode
+    from arruma_dir.hardware import HardwareProfile
+
+from arruma_dir.hardware import detect_hardware, disk_usage_for, normalize_performance_mode
 
 from arruma_dir.logging_utils import close_logger, create_operation_logger
 from arruma_dir.organizer import (
@@ -72,10 +75,11 @@ class ArrumaDirApp(tk.Tk):
         self.cad_duplicates_var = tk.BooleanVar(value=False)
         self.external_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Pronto")
-        self.hardware_profile = detect_hardware()
+        self.hardware_profile: HardwareProfile | None = None
         self.performance_var = tk.StringVar(value="balanced")
         self.disk_usage_var = tk.StringVar(value="Uso do disco: (escolha uma pasta)")
         self.disk_percent_var = tk.DoubleVar(value=0.0)
+        self.disk_usage_after_id: str | None = None
         self.safety_var = tk.StringVar(value="Escolha o local, gere uma previa e revise antes de aplicar.")
         self.next_step_var = tk.StringVar(value="1. Escolha o modo e a pasta. 2. Gere a previa. 3. Revise antes de aplicar.")
         self.summary_vars = {
@@ -91,17 +95,16 @@ class ArrumaDirApp(tk.Tk):
         self.summary_chart_frame: ttk.Frame | None = None
         self.summary_chart_canvas: FigureCanvasTkAgg | None = None
         self.summary_chart_figure: Figure | None = None
-        self.summary_chart_ax = None
+        self.summary_chart_ax: Any | None = None
         self.directory_chart_frame: ttk.Frame | None = None
         self.directory_chart_canvas: FigureCanvasTkAgg | None = None
         self.directory_chart_figure: Figure | None = None
-        self.directory_chart_ax = None
+        self.directory_chart_ax: Any | None = None
 
         self._configure_style()
         self._build_layout()
         self.path_var.trace_add("write", self._on_path_changed)
         self._update_mode_controls()
-        self._clear_charts()
         self._set_action_buttons()
         self._on_path_changed()
         self.after(120, self._poll_queue)
@@ -130,6 +133,7 @@ class ArrumaDirApp(tk.Tk):
         style.configure("Stop.TButton", padding=(10, 6), foreground="#ffffff", background="#dc2626")
         style.map("Stop.TButton", background=[("active", "#b91c1c"), ("disabled", "#fca5a5")])
         style.map("Primary.TButton", background=[("active", "#1d4ed8"), ("disabled", "#94a3b8")])
+        style.configure("Disk.Horizontal.TProgressbar", background=ACCENT, troughcolor="#e2e8f0")
         style.configure("Treeview", rowheight=26, font=("Segoe UI", 9), bordercolor="#e2e8f0", fieldbackground="#ffffff")
         style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9), background="#e8edf5", foreground="#0f172a")
 
@@ -146,8 +150,7 @@ class ArrumaDirApp(tk.Tk):
             text="Organizacao segura para Documentos e Projetos/CAD, sempre com previa antes de mover.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
-        status_box = ttk.Frame(header, style="TFrame")
-        status_box.configure(background=HEADER_BG)
+        status_box = tk.Frame(header, bg=HEADER_BG)
         status_box.grid(row=0, column=1, rowspan=2, sticky="e")
         ttk.Label(status_box, textvariable=self.status_var, style="Subtitle.TLabel").pack(anchor="e")
 
@@ -267,7 +270,7 @@ class ArrumaDirApp(tk.Tk):
         ttk.Label(disk_frame, textvariable=self.disk_usage_var, style="PanelMuted.TLabel").grid(
             row=0, column=0, sticky="ew"
         )
-        ttk.Progressbar(disk_frame, variable=self.disk_percent_var, style="Disk.TProgressbar").grid(
+        ttk.Progressbar(disk_frame, variable=self.disk_percent_var, style="Disk.Horizontal.TProgressbar").grid(
             row=1, column=0, sticky="ew", pady=(4, 0)
         )
 
@@ -290,25 +293,19 @@ class ArrumaDirApp(tk.Tk):
         notebook.add(self.duplicate_tree.master, text="Repetidos")
 
         self.summary_chart_frame = ttk.Frame(notebook)
-        self.summary_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
-        self.summary_chart_ax = self.summary_chart_figure.add_subplot(111)
-        self.summary_chart_ax.set_facecolor(APP_BG)
-        self.summary_chart_figure.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
-
-        self.summary_chart_canvas = FigureCanvasTkAgg(self.summary_chart_figure, self.summary_chart_frame)
-        self.summary_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
+        ttk.Label(
+            self.summary_chart_frame,
+            text="Gere uma previa para ver o grafico.",
+            style="Muted.TLabel",
+        ).pack(expand=True)
         notebook.add(self.summary_chart_frame, text="Tipos")
 
         self.directory_chart_frame = ttk.Frame(notebook)
-        self.directory_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
-        self.directory_chart_ax = self.directory_chart_figure.add_subplot(111)
-        self.directory_chart_ax.set_facecolor(APP_BG)
-        self.directory_chart_figure.subplots_adjust(left=0.28, right=0.95, top=0.9, bottom=0.12)
-
-        self.directory_chart_canvas = FigureCanvasTkAgg(self.directory_chart_figure, self.directory_chart_frame)
-        self.directory_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
+        ttk.Label(
+            self.directory_chart_frame,
+            text="Gere uma previa para ver os diretorios.",
+            style="Muted.TLabel",
+        ).pack(expand=True)
         notebook.add(self.directory_chart_frame, text="Diretórios")
 
         self.log = tk.Text(notebook, height=8, wrap="word")
@@ -340,9 +337,12 @@ class ArrumaDirApp(tk.Tk):
         ttk.Label(box, text=label, style="StatLabel.TLabel").grid(row=1, column=0, sticky="w")
 
     def _on_path_changed(self, *args: object) -> None:
-        self._update_disk_usage()
+        if self.disk_usage_after_id is not None:
+            self.after_cancel(self.disk_usage_after_id)
+        self.disk_usage_after_id = self.after(250, self._update_disk_usage)
 
     def _update_disk_usage(self) -> None:
+        self.disk_usage_after_id = None
         path = self.path_var.get()
         if not path or not Path(path).exists():
             self.disk_usage_var.set("Uso do disco: (pasta invalida)")
@@ -357,6 +357,38 @@ class ArrumaDirApp(tk.Tk):
         except (OSError, ValueError):
             self.disk_usage_var.set("Uso do disco: (nao foi possivel ler)")
             self.disk_percent_var.set(0.0)
+
+    def _ensure_chart_canvases(self) -> bool:
+        if self.summary_chart_ax and self.directory_chart_ax:
+            return True
+        if not self.summary_chart_frame or not self.directory_chart_frame:
+            return False
+
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+        except Exception as exc:  # noqa: BLE001 - charts are optional for the GUI flow.
+            self._append_log(f"Graficos indisponiveis: {exc}")
+            return False
+
+        for child in self.summary_chart_frame.winfo_children():
+            child.destroy()
+        self.summary_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
+        self.summary_chart_ax = self.summary_chart_figure.add_subplot(111)
+        self.summary_chart_ax.set_facecolor(APP_BG)
+        self.summary_chart_figure.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
+        self.summary_chart_canvas = FigureCanvasTkAgg(self.summary_chart_figure, self.summary_chart_frame)
+        self.summary_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        for child in self.directory_chart_frame.winfo_children():
+            child.destroy()
+        self.directory_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
+        self.directory_chart_ax = self.directory_chart_figure.add_subplot(111)
+        self.directory_chart_ax.set_facecolor(APP_BG)
+        self.directory_chart_figure.subplots_adjust(left=0.28, right=0.95, top=0.9, bottom=0.12)
+        self.directory_chart_canvas = FigureCanvasTkAgg(self.directory_chart_figure, self.directory_chart_frame)
+        self.directory_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        return True
 
     def _clear_pie_chart(self) -> None:
         if not self.summary_chart_ax:
@@ -399,8 +431,10 @@ class ArrumaDirApp(tk.Tk):
         self._clear_directory_chart()
 
     def _update_pie_chart(self, summary_data: dict[str, int]) -> None:
-        if not self.summary_chart_ax or not summary_data:
+        if not summary_data or sum(summary_data.values()) <= 0:
             self._clear_pie_chart()
+            return
+        if not self._ensure_chart_canvases():
             return
 
         self.summary_chart_ax.clear()
@@ -433,11 +467,14 @@ class ArrumaDirApp(tk.Tk):
             autotext.set_color("#ffffff")
         self.summary_chart_ax.set_title(f"Distribuicao de {total_files} Arquivos por Tipo", color="#0f172a")
         self.summary_chart_ax.axis("equal")
-        self.summary_chart_canvas.draw()
+        if self.summary_chart_canvas:
+            self.summary_chart_canvas.draw()
 
     def _update_directory_chart(self, directory_data: dict[str, int]) -> None:
-        if not self.directory_chart_ax or not directory_data:
+        if not directory_data or sum(directory_data.values()) <= 0:
             self._clear_directory_chart()
+            return
+        if not self._ensure_chart_canvases():
             return
 
         self.directory_chart_ax.clear()
@@ -666,6 +703,8 @@ class ArrumaDirApp(tk.Tk):
         if not mode:
             mode = "balanced"
             self.performance_var.set(mode)
+        if self.hardware_profile is None:
+            self.hardware_profile = detect_hardware()
         workers = self.hardware_profile.workers_for(mode)
         return workers, self.hardware_profile.summary(mode)
 
