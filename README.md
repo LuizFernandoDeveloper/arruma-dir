@@ -42,6 +42,15 @@ Sem argumentos, o app tambem abre a interface:
 arruma-dir
 ```
 
+Na interface voce escolhe:
+
+- o modo `Documentos / PARA` ou `Projetos / CAD`;
+- a pasta raiz que sera organizada;
+- se a previa deve buscar repetidos;
+- no modo Projetos/CAD, se deve vasculhar HDs externos e se duplicatas CAD devem entrar no relatorio.
+
+Por seguranca, a interface bloqueia raiz de disco e pastas de sistema, exige previa antes de aplicar e pede confirmacao digitada para qualquer movimentacao real.
+
 ## Gerar uma previa pelo terminal
 
 ```powershell
