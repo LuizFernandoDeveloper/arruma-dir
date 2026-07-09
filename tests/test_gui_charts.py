@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from arruma_dir.gui_charts import build_directory_bars, build_pie_slices, build_ranked_bars, percent_text
+from arruma_dir.gui_charts import build_directory_bars, build_pie_slices, build_ranked_bars, label_margin, percent_text
 
 
 def test_gui_charts_import_does_not_load_matplotlib() -> None:
@@ -74,6 +74,15 @@ def test_build_ranked_bars_keeps_labels_clean_for_horizontal_chart() -> None:
 def test_percent_text_handles_empty_and_normal_totals() -> None:
     assert percent_text(0, 0) == "0%"
     assert percent_text(25, 100) == "25.0%"
+
+
+def test_label_margin_expands_for_long_chart_labels() -> None:
+    short = label_margin([".pdf", ".jpg"], minimum=0.18, maximum=0.44)
+    long = label_margin(["projetos/engenharia/SolidWorks-Electrical"], minimum=0.18, maximum=0.44)
+
+    assert short == 0.18
+    assert long > short
+    assert long <= 0.44
 
 
 def test_build_directory_bars_keeps_chart_draw_order_and_groups_tail() -> None:

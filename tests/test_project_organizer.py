@@ -123,6 +123,25 @@ class ProjectOrganizerTests(unittest.TestCase):
 
             self.assertNotIn(str(cad_file), {item.source for item in plan})
 
+    def test_dwg_with_project_code_goes_to_matching_project_dwg_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            existing_project = root / "projetos" / "Ramtech" / "Projetos" / "P20051-792589 - BEM BRASIL"
+            existing_project.mkdir(parents=True)
+            staging = root / "organizar"
+            staging.mkdir()
+            drawing = staging / "P20051-PAINEL-GERAL.dwg"
+            drawing.write_bytes(b"dwg")
+
+            plan = build_organization_plan(root)
+            by_source = {item.source: item for item in plan}
+
+            self.assertIn(str(drawing), by_source)
+            destination = Path(by_source[str(drawing)].destination)
+            self.assertEqual(destination.parent.name, "3- Projeto Eletrico (DWG)")
+            self.assertEqual(destination.parent.parent, existing_project)
+            self.assertIn("extensao .dwg", by_source[str(drawing)].reason)
+
     def test_project_file_package_is_skipped_by_duplicate_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -137,6 +156,31 @@ class ProjectOrganizerTests(unittest.TestCase):
 
             self.assertEqual(report.stats["duplicate_moves"], 0)
             self.assertTrue(any("arquivos CAD ignorados" in warning for warning in report.warnings))
+
+    def test_solidworks_electrical_ewg_is_skipped_by_duplicate_quarantine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "organizar" / "solid-eletrical" / "estudoDeCaso"
+            package.mkdir(parents=True)
+            (package / "folha01.ewg").write_bytes(b"same drawing")
+            (package / "folha01 copia.ewg").write_bytes(b"same drawing")
+
+            report = scan_projects(root)
+
+            self.assertEqual(report.stats["duplicate_moves"], 0)
+            self.assertTrue(any("arquivos CAD ignorados" in warning for warning in report.warnings))
+
+    def test_solidworks_electrical_ewg_can_be_included_explicitly_in_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "organizar" / "solid-eletrical" / "estudoDeCaso"
+            package.mkdir(parents=True)
+            (package / "folha01.ewg").write_bytes(b"same drawing")
+            (package / "folha01 copia.ewg").write_bytes(b"same drawing")
+
+            report = scan_projects(root, include_cad_duplicates=True)
+
+            self.assertEqual(report.stats["duplicate_moves"], 1)
 
     def test_project_file_package_can_be_included_explicitly_in_duplicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

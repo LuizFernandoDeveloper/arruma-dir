@@ -104,6 +104,13 @@ def percent_text(count: int, total: int) -> str:
     return f"{percent:.1f}%"
 
 
+def label_margin(labels: list[str], *, minimum: float = 0.16, maximum: float = 0.42) -> float:
+    if not labels:
+        return minimum
+    longest = max(len(label) for label in labels)
+    return min(maximum, max(minimum, 0.10 + (longest * 0.008)))
+
+
 class LazyChartDeck:
     def __init__(
         self,
@@ -175,8 +182,13 @@ class LazyChartDeck:
                 fontsize=8,
             )
         max_value = max(sizes)
-        self.summary_ax.set_xlim(0, max_value * 1.22)
-        self.summary_figure.subplots_adjust(left=0.16, right=0.93, top=0.86, bottom=0.18)
+        self.summary_ax.set_xlim(0, max_value * 1.35)
+        self.summary_figure.subplots_adjust(
+            left=label_margin(labels, minimum=0.18, maximum=0.44),
+            right=0.96,
+            top=0.86,
+            bottom=0.18,
+        )
         if self.summary_canvas:
             self.summary_canvas.draw()
 
@@ -211,7 +223,13 @@ class LazyChartDeck:
                 fontsize=8,
             )
         max_value = max(sizes)
-        self.directory_ax.set_xlim(0, max_value * 1.22)
+        self.directory_ax.set_xlim(0, max_value * 1.35)
+        self.directory_figure.subplots_adjust(
+            left=label_margin(labels, minimum=0.28, maximum=0.5),
+            right=0.96,
+            top=0.9,
+            bottom=0.12,
+        )
         if self.directory_canvas:
             self.directory_canvas.draw()
 

@@ -58,6 +58,18 @@ RAMTECH_PROJECT_SUBFOLDERS = (
     "12- Lista de Identificacoes Excel",
 )
 
+RAMTECH_PROJECT_SUBFOLDER_BY_EXTENSION = {
+    ".dwg": "3- Projeto Eletrico (DWG)",
+    ".dxf": "3- Projeto Eletrico (DWG)",
+    ".dwt": "3- Projeto Eletrico (DWG)",
+    ".edb": "1- Projeto Eletrico (Eplan)",
+    ".elk": "1- Projeto Eletrico (Eplan)",
+    ".epj": "1- Projeto Eletrico (Eplan)",
+    ".ept": "1- Projeto Eletrico (Eplan)",
+    ".ewg": "1- Projeto Eletrico (Eplan)",
+    ".pdf": "2- Projeto Eletrico (PDF)",
+}
+
 OPCAO_PROJECT_SUBFOLDERS = (
     "01 - Montagem",
     "02 - Pecas",
@@ -81,6 +93,7 @@ PROJECT_EXTENSIONS = {
     ".elk",
     ".epj",
     ".ept",
+    ".ewg",
     ".fn1",
     ".iges",
     ".igs",
@@ -108,6 +121,7 @@ PROJECT_EXTENSIONS = {
 CAD_TREE_FILENAMES = {
     ".project",
 }
+CAD_TREE_NAME_ENDINGS = (".proj.tewzip",)
 
 CAD_TREE_EXTENSIONS = {
     ".ac$",
@@ -124,6 +138,7 @@ CAD_TREE_EXTENSIONS = {
     ".elk",
     ".epj",
     ".ept",
+    ".ewg",
     ".lin",
     ".pat",
     ".pc3",
@@ -252,6 +267,51 @@ def safe_filename(value: str) -> str:
     return f"{slug(stem)}{suffix}" if suffix else slug(path.name)
 
 
+def project_code_key(value: str) -> str | None:
+    match = PROJECT_CODE_RE.search(value)
+    if not match:
+        return None
+    return re.sub(r"[^a-z0-9]+", "", canonical_text(match.group(0)))
+
+
+def project_folder_name_from_file(path: Path) -> str:
+    suffix = path.suffix
+    stem = path.name[: -len(suffix)] if suffix else path.name
+    return stem.strip(" .-_") or path.stem or "Projeto sem nome"
+
+
+def find_existing_ramtech_project_folder(root: Path, path: Path) -> Path | None:
+    code = project_code_key(path.name)
+    if not code:
+        return None
+    projects_root = canonical_roots(root)["ramtech_projetos"]
+    if not projects_root.exists():
+        return None
+    try:
+        candidates = [item for item in projects_root.iterdir() if item.is_dir()]
+    except OSError:
+        return None
+    for candidate in sorted(candidates, key=lambda item: item.name.lower()):
+        candidate_code = project_code_key(candidate.name)
+        if candidate_code == code:
+            return candidate
+    return None
+
+
+def ramtech_project_file_target(path: Path, root: Path) -> tuple[Path | None, str]:
+    if not path.is_file():
+        return None, "nao e arquivo de projeto"
+    subfolder = RAMTECH_PROJECT_SUBFOLDER_BY_EXTENSION.get(path.suffix.lower())
+    if subfolder is None:
+        return None, "extensao sem subpasta Ramtech/Macrotec"
+    if project_code_key(path.name) is None:
+        return None, "arquivo sem codigo de projeto Ramtech/Macrotec"
+    project_root = find_existing_ramtech_project_folder(root, path)
+    if project_root is None:
+        project_root = canonical_roots(root)["ramtech_projetos"] / project_folder_name_from_file(path)
+    return project_root / subfolder / path.name, f"codigo de projeto + extensao {path.suffix.lower()}: {subfolder}"
+
+
 def is_noise_file(path: Path) -> bool:
     name = path.name.lower()
     return name in NOISE_NAMES or name.startswith("~$") or path.suffix.lower() in NOISE_EXTENSIONS
@@ -264,7 +324,7 @@ def is_cad_tree_file(path: Path) -> bool:
     suffix = path.suffix.lower()
     if suffix in CAD_TREE_EXTENSIONS:
         return True
-    return name.endswith(".proj.tewzip")
+    return any(name.endswith(ending) for ending in CAD_TREE_NAME_ENDINGS)
 
 
 @lru_cache(maxsize=8192)
@@ -276,7 +336,13 @@ def directory_has_cad_marker(directory: str) -> bool:
         entries = list(path.iterdir())
     except OSError:
         return False
-    return any(entry.is_file() and is_cad_tree_file(entry) for entry in entries)
+    for entry in entries:
+        try:
+            if entry.is_file() and is_cad_tree_file(entry):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def is_inside_cad_project_tree(path: Path) -> bool:
@@ -661,6 +727,10 @@ def classify_for_root(path: Path, root: Path) -> tuple[Path | None, str]:
         if "forno" in text and "corning" in text:
             return roots["meus"] / "SolidWorks-Electrical" / "FORNO CORNING" / "Back" / path.name, "arquivo TEWZIP do Forno Corning"
         return roots["meus"] / "SolidWorks-Electrical" / "_arquivos_tewzip" / path.name, "arquivo TEWZIP"
+
+    project_file_target, project_file_reason = ramtech_project_file_target(path, root)
+    if project_file_target is not None:
+        return project_file_target, project_file_reason
 
     if suffix in {".pdf", ".xlsx", ".xls", ".doc", ".docx"}:
         standard_key = canonical_text(path.name)

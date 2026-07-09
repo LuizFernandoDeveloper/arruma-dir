@@ -9,6 +9,7 @@ from arruma_dir.organizer import (
     choose_duplicate_keeper,
     classify_entry,
     clean_leaf_name,
+    duplicate_hash_label,
     find_duplicate_files,
     move_duplicates_to_quarantine,
     rollback_moves,
@@ -43,6 +44,33 @@ class OrganizerTests(unittest.TestCase):
             self.assertEqual(Path(by_name["10-engenharia"].destination).parts[-2:], ("recursos", "engenharia"))
             self.assertEqual(Path(by_name["PowerShell"].destination).parts[-3:-1], ("projetos", "automacao_codigo"))
             self.assertEqual(Path(by_name["Atividade 01.docx"].destination).parts[-3:-1], ("recursos", "estudos"))
+
+    def test_repository_topics_use_compatible_names_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Python Scripts").mkdir()
+
+            scan = scan_directory(root, include_duplicates=False)
+
+            self.assertEqual(len(scan.plan), 1)
+            self.assertEqual(Path(scan.plan[0].destination).parts[-2:], ("automacao_codigo", "python_scripts"))
+
+    def test_plc_extensions_go_to_plc_project_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ladder = root / "Exercicio 5 de Ladder.stu"
+            archive = root / "desafio do luizh.auto.sta"
+            ladder.write_bytes(b"schneider project")
+            archive.write_bytes(b"automation archive")
+
+            scan = scan_directory(root, include_duplicates=False)
+            by_name = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertEqual(by_name[ladder.name].category, "projetos/automacao_codigo/plc")
+            self.assertEqual(Path(by_name[ladder.name].destination).name, "exercicio_5_de_ladder.stu")
+            self.assertEqual(by_name[archive.name].category, "projetos/automacao_codigo/plc")
+            self.assertEqual(scan.file_summary[".stu PLC"], 1)
+            self.assertEqual(scan.file_summary[".sta PLC"], 1)
 
     def test_scan_reports_file_and_directory_composition_with_duplicates_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +174,50 @@ class OrganizerTests(unittest.TestCase):
             self.assertEqual(included.plan[0].category, "recursos/engenharia")
             self.assertEqual(included.plan[0].reason, "pasta com arquivos CAD")
 
+    def test_document_solidworks_electrical_files_are_cad(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            drawing = root / "folha01.ewg"
+            drawing.write_bytes(b"electrical drawing")
+
+            protected = scan_directory(root, include_duplicates=False)
+            included = scan_directory(root, include_duplicates=False, include_cad=True)
+
+            self.assertEqual(protected.plan, [])
+            self.assertEqual(protected.file_summary[".ewg CAD"], 1)
+            self.assertTrue(any("CAD em Documentos protegido" in item for item in protected.skipped))
+            self.assertEqual(len(included.plan), 1)
+            self.assertEqual(included.plan[0].category, "projetos/engenharia/SolidWorks-Electrical")
+
+    def test_document_solidworks_electrical_archive_goes_to_specific_folder_when_included(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "FORNO CORNING-FINAL-completo.proj.tewzip"
+            archive.write_bytes(b"electrical archive")
+
+            protected = scan_directory(root, include_duplicates=False)
+            included = scan_directory(root, include_duplicates=False, include_cad=True)
+
+            self.assertEqual(protected.plan, [])
+            self.assertTrue(any("CAD em Documentos protegido" in item for item in protected.skipped))
+            self.assertEqual(len(included.plan), 1)
+            self.assertEqual(included.plan[0].category, "projetos/engenharia/SolidWorks-Electrical")
+            self.assertIn("SolidWorks Electrical", included.plan[0].reason)
+
+    def test_document_solidworks_electrical_project_marker_protects_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "SolidWorks Electrical" / "Projeto A"
+            project.mkdir(parents=True)
+            (project / ".project").write_text("<projectDescription />", encoding="utf-8")
+            (project / "assets" / "logo.jpg").parent.mkdir()
+            (project / "assets" / "logo.jpg").write_bytes(b"asset")
+
+            scan = scan_directory(root, include_duplicates=False)
+
+            self.assertEqual(scan.plan, [])
+            self.assertTrue(any("CAD em Documentos protegido" in item for item in scan.skipped))
+
     def test_document_cad_duplicates_only_enter_when_option_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -174,7 +246,7 @@ class OrganizerTests(unittest.TestCase):
 
             self.assertFalse(result.errors)
             self.assertFalse(source.exists())
-            self.assertTrue((root / "projetos" / "automacao_codigo" / "Python Scripts" / "bot.py").exists())
+            self.assertTrue((root / "projetos" / "automacao_codigo" / "python_scripts" / "bot.py").exists())
 
     def test_rollback_moves_returns_files_to_original_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -223,6 +295,8 @@ class OrganizerTests(unittest.TestCase):
             self.assertEqual(exact, [])
             self.assertEqual(len(possible), 1)
             self.assertTrue(any("tamanhos diferentes" in item for item in possible[0].differences))
+            self.assertTrue(any("hash nao aplicavel" in item for item in possible[0].differences))
+            self.assertEqual(duplicate_hash_label(possible[0]), "nao aplic.")
 
             result = move_duplicates_to_quarantine(root, duplicate_scan.duplicates)
             self.assertEqual(result.moved, [])

@@ -40,6 +40,104 @@ SKIP_NAMES = {
 
 GENERATED_DIRS = {"_arruma_dir", "_duplicados"}
 PRODUCTIVITY_DIRS = {"entrada", "projetos", "areas", "recursos", "arquivo"}
+DOCUMENT_CAD_FILENAMES = {".project"}
+DOCUMENT_CAD_NAME_ENDINGS = (".proj.tewzip",)
+SOLIDWORKS_ELECTRICAL_EXTENSIONS = {
+    ".edb",
+    ".elk",
+    ".epj",
+    ".ept",
+    ".ewg",
+    ".fn1",
+    ".ppe",
+    ".proj",
+    ".tewzip",
+}
+PLC_STRONG_EXTENSIONS = {
+    ".acd",
+    ".apa",
+    ".ap11",
+    ".ap12",
+    ".ap13",
+    ".ap14",
+    ".ap15",
+    ".ap16",
+    ".ap17",
+    ".ap18",
+    ".ap19",
+    ".ap20",
+    ".cxp",
+    ".cxt",
+    ".gx3",
+    ".gpp",
+    ".gppw",
+    ".gps",
+    ".gxw",
+    ".l5k",
+    ".l5x",
+    ".mer",
+    ".plcproj",
+    ".projectarchive",
+    ".rss",
+    ".rsp",
+    ".s7p",
+    ".smc2",
+    ".sta",
+    ".stu",
+    ".tpzip",
+    ".tsproj",
+    ".xef",
+    ".xsy",
+    ".zap11",
+    ".zap12",
+    ".zap13",
+    ".zap14",
+    ".zap15",
+    ".zap16",
+    ".zap17",
+    ".zap18",
+    ".zap19",
+    ".zap20",
+    ".zef",
+}
+PLC_CONTEXT_EXTENSIONS = {
+    ".awl",
+    ".compiled-library",
+    ".db",
+    ".exp",
+    ".library",
+    ".project",
+    ".scl",
+    ".udt",
+    ".vat",
+}
+PLC_CONTEXT_KEYWORDS = (
+    "allen bradley",
+    "beckhoff",
+    "clp",
+    "codesys",
+    "control expert",
+    "cx programmer",
+    "factorytalk",
+    "gx works",
+    "ladder",
+    "logix",
+    "mitsubishi",
+    "omron",
+    "plc",
+    "rockwell",
+    "rslogix",
+    "schneider",
+    "siemens",
+    "step 7",
+    "step7",
+    "studio 5000",
+    "sysmac",
+    "tia portal",
+    "twincat",
+    "unity pro",
+    "wago",
+)
 DOCUMENT_CAD_EXTENSIONS = {
     ".dwg",
     ".dxf",
@@ -60,6 +158,7 @@ DOCUMENT_CAD_EXTENSIONS = {
     ".eprt",
     ".easm",
     ".edrw",
+    ".ewg",
     ".catpart",
     ".catproduct",
     ".ipt",
@@ -118,6 +217,20 @@ class Topic:
 
 
 DEFAULT_TOPICS: tuple[Topic, ...] = (
+    Topic(
+        "plc",
+        "Projetos PLC",
+        "projetos/automacao_codigo/plc",
+        PLC_CONTEXT_KEYWORDS
+        + (
+            "open plc",
+            "programacao de clp",
+            "programacao plc",
+            "supervisório",
+            "supervisorio",
+        ),
+        tuple(sorted(PLC_STRONG_EXTENSIONS)),
+    ),
     Topic(
         "automacao",
         "Projetos de automacao e codigo",
@@ -192,6 +305,23 @@ DEFAULT_TOPICS: tuple[Topic, ...] = (
         ),
     ),
     Topic(
+        "solidworks_electrical",
+        "Projetos SolidWorks Electrical",
+        "projetos/engenharia/SolidWorks-Electrical",
+        (
+            "solidworks electrical",
+            "solidworks eletrical",
+            "solid electrical",
+            "solid eletrical",
+            "solid-eletrical",
+            "solidworks eletric",
+            "solidworks electric",
+            "tew",
+            "tewzip",
+        ),
+        tuple(sorted(SOLIDWORKS_ELECTRICAL_EXTENSIONS)),
+    ),
+    Topic(
         "engenharia_referencia",
         "Recursos de engenharia",
         "recursos/engenharia",
@@ -219,6 +349,7 @@ DEFAULT_TOPICS: tuple[Topic, ...] = (
             ".sldasm",
             ".slddrw",
             ".tewzip",
+            ".ewg",
             ".m",
             ".slx",
         ),
@@ -409,6 +540,7 @@ DEFAULT_TOPICS: tuple[Topic, ...] = (
 
 
 TOPIC_DIRS = {Path(topic.directory).parts[0].lower() for topic in DEFAULT_TOPICS} | PRODUCTIVITY_DIRS
+REPOSITORY_TOPIC_IDS = {"automacao", "plc"}
 
 
 @dataclass
@@ -576,7 +708,44 @@ def is_protected_app_dir(path: Path) -> bool:
 
 
 def is_document_cad_file(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in DOCUMENT_CAD_EXTENSIONS
+    if not path.is_file():
+        return False
+    name = path.name.lower()
+    return (
+        name in DOCUMENT_CAD_FILENAMES
+        or any(name.endswith(ending) for ending in DOCUMENT_CAD_NAME_ENDINGS)
+        or path.suffix.lower() in DOCUMENT_CAD_EXTENSIONS
+    )
+
+
+def solidworks_electrical_reason(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    name = path.name.lower()
+    if name in DOCUMENT_CAD_FILENAMES:
+        return "marcador SolidWorks Electrical: .project"
+    if any(name.endswith(ending) for ending in DOCUMENT_CAD_NAME_ENDINGS):
+        return "arquivo SolidWorks Electrical: .proj.tewzip"
+    suffix = path.suffix.lower()
+    if suffix in SOLIDWORKS_ELECTRICAL_EXTENSIONS:
+        return f"extensao SolidWorks Electrical: {suffix}"
+    return None
+
+
+def has_plc_context(path: Path) -> bool:
+    text = canonical_text(" ".join(path.parts))
+    return any(keyword in text for keyword in PLC_CONTEXT_KEYWORDS)
+
+
+def plc_reason(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    suffix = path.suffix.lower()
+    if suffix in PLC_STRONG_EXTENSIONS:
+        return f"extensao PLC: {suffix}"
+    if suffix in PLC_CONTEXT_EXTENSIONS and has_plc_context(path):
+        return f"extensao PLC em contexto conhecido: {suffix}"
+    return None
 
 
 def directory_has_document_cad(path: Path, *, max_depth: int = 4, max_files: int = 500) -> bool:
@@ -601,7 +770,36 @@ def directory_has_document_cad(path: Path, *, max_depth: int = 4, max_files: int
             if should_skip_name(filename):
                 continue
             seen_files += 1
-            if Path(filename).suffix.lower() in DOCUMENT_CAD_EXTENSIONS:
+            if is_document_cad_file(current / filename):
+                return True
+            if seen_files >= max_files:
+                return False
+    return False
+
+
+def directory_has_plc_file(path: Path, *, max_depth: int = 4, max_files: int = 500) -> bool:
+    if not path.is_dir():
+        return False
+
+    root_depth = len(path.parts)
+    seen_files = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        current = Path(dirpath)
+        depth = len(current.parts) - root_depth
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if depth < max_depth
+            and not should_skip_name(dirname)
+            and not dirname.startswith(".")
+            and not is_protected_app_dir_name(dirname)
+            and dirname.lower() not in SKIP_WALK_DIRS
+        ]
+        for filename in filenames:
+            if should_skip_name(filename):
+                continue
+            seen_files += 1
+            if plc_reason(current / filename):
                 return True
             if seen_files >= max_files:
                 return False
@@ -704,6 +902,8 @@ def file_summary_key(path: Path) -> str:
         return ".pdf padrão empresa"
     if book_pdf_reason(path):
         return ".pdf livro"
+    if plc_reason(path):
+        return f"{path.suffix.lower()} PLC"
     if is_document_cad_file(path):
         return f"{path.suffix.lower()} CAD"
     return path.suffix.lower() or "(sem extensão)"
@@ -720,6 +920,14 @@ def classify_entry(path: Path) -> tuple[Topic, str]:
     book_reason = book_pdf_reason(path)
     if book_reason:
         return topic_by_id("leitura"), book_reason
+
+    electrical_reason = solidworks_electrical_reason(path)
+    if electrical_reason:
+        return topic_by_id("solidworks_electrical"), electrical_reason
+
+    automation_reason = plc_reason(path)
+    if automation_reason:
+        return topic_by_id("plc"), automation_reason
 
     best_topic: Topic | None = None
     best_score = 0
@@ -744,6 +952,9 @@ def classify_entry(path: Path) -> tuple[Topic, str]:
     if path.is_dir() and directory_has_document_cad(path):
         return topic_by_id("engenharia_referencia"), "pasta com arquivos CAD"
 
+    if path.is_dir() and directory_has_plc_file(path):
+        return topic_by_id("plc"), "pasta com arquivos PLC"
+
     if extension:
         for topic in DEFAULT_TOPICS:
             if extension in topic.extensions:
@@ -753,7 +964,7 @@ def classify_entry(path: Path) -> tuple[Topic, str]:
 
 
 def cleaned_name_matches_topic(path: Path, topic: Topic, compat_names: bool = False) -> bool:
-    clean = clean_leaf_name(path, compat_names=compat_names)
+    clean = clean_leaf_name_for_topic(path, topic, compat_names=compat_names)
     clean_text = canonical_text(clean)
     return clean_text in {
         canonical_text(topic.directory),
@@ -761,6 +972,14 @@ def cleaned_name_matches_topic(path: Path, topic: Topic, compat_names: bool = Fa
         canonical_text(topic.label),
         canonical_text(topic.id),
     }
+
+
+def topic_uses_compat_names(topic: Topic) -> bool:
+    return topic.id in REPOSITORY_TOPIC_IDS
+
+
+def clean_leaf_name_for_topic(path: Path, topic: Topic, compat_names: bool = False) -> str:
+    return clean_leaf_name(path, compat_names=compat_names or topic_uses_compat_names(topic))
 
 
 def ensure_inside(root: Path, target: Path) -> None:
@@ -857,7 +1076,7 @@ def scan_directory(
                 destination = target_dir
             else:
                 action = "move"
-                destination = target_dir / clean_leaf_name(entry, compat_names=compat_names)
+                destination = target_dir / clean_leaf_name_for_topic(entry, topic, compat_names=compat_names)
 
             if entry.resolve(strict=False) == destination.resolve(strict=False):
                 result.skipped.append(str(entry))
@@ -1329,6 +1548,7 @@ def analyze_file_differences(paths: Iterable[Path], hash_by_path: dict[str, str]
     sizes: dict[int, int] = {}
     extensions: set[str] = set()
     hashes: set[str] = set()
+    hashed_count = 0
     mtimes: set[int] = set()
     names: set[str] = set()
 
@@ -1337,6 +1557,7 @@ def analyze_file_differences(paths: Iterable[Path], hash_by_path: dict[str, str]
         extensions.add(path.suffix.lower() or "(sem extensao)")
         digest = hash_by_path.get(str(path))
         if digest:
+            hashed_count += 1
             hashes.add(digest)
         try:
             stat = path.stat()
@@ -1351,6 +1572,9 @@ def analyze_file_differences(paths: Iterable[Path], hash_by_path: dict[str, str]
     if len(sizes) > 1:
         ordered = sorted(sizes)
         differences.append(f"tamanhos diferentes: {ordered[0]} a {ordered[-1]} bytes")
+        differences.append("hash nao aplicavel: tamanhos diferentes descartam copia exata")
+    elif paths and hashed_count < len(paths):
+        differences.append("hash nao calculado: use Duplicatas completas para revisar conteudo")
     if len(extensions) > 1:
         differences.append("extensoes diferentes: " + ", ".join(sorted(extensions)))
     if len(hashes) > 1:
@@ -1361,6 +1585,22 @@ def analyze_file_differences(paths: Iterable[Path], hash_by_path: dict[str, str]
         differences.append("nomes diferentes")
 
     return differences
+
+
+def duplicate_hash_label(group: DuplicateGroup) -> str:
+    if group.sha256:
+        return group.sha256[:12]
+
+    normalized_differences = " ".join(canonical_text(item) for item in group.differences)
+    if "hash nao aplicavel" in normalized_differences:
+        return "nao aplic."
+    if "sha 256 diferente" in normalized_differences:
+        return "SHA dif."
+    if "hash nao calculado" in normalized_differences:
+        return "sem hash"
+    if group.kind == "possible":
+        return "revisar"
+    return "-"
 
 
 def choose_duplicate_keeper(files: Iterable[str], root: str | Path) -> str:
