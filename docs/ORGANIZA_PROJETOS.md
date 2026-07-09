@@ -120,6 +120,14 @@ python scripts\organiza_projetos.py scan --root "F:\projetos" --external --exter
 
 O script copia candidatos para `F:\projetos\_arruma_projetos\entrada_hds` somente quando voce aplicar com `--import-external --yes`.
 
+Popular base compara os HDs escolhidos com a base atual por conteudo. Arquivos que ja existem na base sao ignorados; o relatorio fica apenas com candidatos ausentes e destinos dentro de `F:\projetos\projetos`.
+
+```powershell
+python scripts\organiza_projetos.py scan --root "F:\projetos" --populate-base --external-drive "E:\" --external-drive "H:\"
+```
+
+Na interface grafica, use o campo de HDs externos, clique `Popular base`, revise a aba Plano e clique `Popular base` novamente para copiar.
+
 ## Aplicar
 
 Primeiro revise o JSON gerado. Depois:
@@ -139,6 +147,8 @@ Importar candidatos encontrados em HD externo:
 ```powershell
 python scripts\organiza_projetos.py apply --report "F:\projetos\_arruma_projetos\reports\projetos-report-YYYYMMDD-HHMMSS.json" --import-external --yes
 ```
+
+Quando o relatorio foi gerado com `--populate-base`, este mesmo apply copia somente os candidatos ausentes para a base canonica.
 
 Sem `--yes`, o comando simula.
 

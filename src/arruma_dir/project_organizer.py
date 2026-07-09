@@ -180,6 +180,9 @@ class ExternalCandidate:
     score: int
     reasons: list[str] = field(default_factory=list)
     size: int | None = None
+    sha256: str | None = None
+    duplicate_of: str | None = None
+    decision: str = "copy_to_inbox"
 
 
 class ProjectApplyResult(TypedDict):
@@ -240,6 +243,13 @@ def canonical_text(value: str) -> str:
 def slug(value: str) -> str:
     value = canonical_text(value)
     return re.sub(r"\s+", "_", value).strip("_") or "sem_nome"
+
+
+def safe_filename(value: str) -> str:
+    path = Path(value)
+    suffix = path.suffix
+    stem = path.name[: -len(suffix)] if suffix else path.name
+    return f"{slug(stem)}{suffix}" if suffix else slug(path.name)
 
 
 def is_noise_file(path: Path) -> bool:
@@ -810,13 +820,83 @@ def candidate_score(path: Path) -> tuple[int, list[str]]:
 
 
 def import_target_for_external(root: Path, source: Path, drive: Path) -> Path:
+    label = slug(drive.drive.replace(":", "") or drive.name)
+    return state_path(root, EXTERNAL_INBOX_DIR, label) / safe_external_relative_path(source, drive)
+
+
+def safe_external_relative_path(source: Path, drive: Path) -> Path:
     try:
         relative = source.relative_to(drive)
     except ValueError:
-        relative = source.name
+        relative = Path(source.name)
+    parts = list(Path(relative).parts)
+    if not parts:
+        return Path(safe_filename(source.name))
+    directory_parts = [slug(part) for part in parts[:-1]]
+    return Path(*directory_parts, safe_filename(parts[-1]))
+
+
+def external_family_base(root: Path, source: Path) -> Path:
+    roots = canonical_roots(root)
+    text = canonical_text(" ".join(source.parts))
+    if "opcao" in text or "opcao industrial" in text or OPCAO_CODE_RE.search(source.name):
+        return roots["opcao"] / "_popular_base"
+    if "ramtech" in text or "macrotec" in text or PROJECT_CODE_RE.search(source.name):
+        return roots["ramtech"] / "_popular_base"
+    return roots["referencias"] / "_popular_base_revisar"
+
+
+def populate_base_target_for_external(root: Path, source: Path, drive: Path) -> tuple[Path, str]:
+    if not is_cad_protected_file(source):
+        target, reason = classify_for_root(source, root)
+        if target is not None:
+            return target, f"popular base: {reason}"
     label = slug(drive.drive.replace(":", "") or drive.name)
-    safe_parts = [slug(part) for part in Path(relative).parts]
-    return state_path(root, EXTERNAL_INBOX_DIR, label, *safe_parts)
+    target = external_family_base(root, source) / label / safe_external_relative_path(source, drive)
+    return target, "popular base: ausente na base; preservar arvore externa para revisao segura"
+
+
+def size_index(paths: Iterable[Path]) -> dict[int, list[Path]]:
+    indexed: dict[int, list[Path]] = {}
+    for path in paths:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size <= 0:
+            continue
+        indexed.setdefault(size, []).append(path)
+    return indexed
+
+
+def existing_file_match(
+    source: Path,
+    base_by_size: dict[int, list[Path]],
+    digest_cache: dict[Path, str],
+    *,
+    cancel_event: threading.Event | None,
+) -> tuple[Path | None, str | None]:
+    try:
+        source_size = source.stat().st_size
+    except OSError:
+        return None, None
+    if source_size <= 0 or source_size not in base_by_size:
+        return None, None
+
+    source_digest = file_sha256(source, cancel_event=cancel_event)
+    for candidate in base_by_size[source_size]:
+        if is_cancelled(cancel_event):
+            raise InterruptedError("operacao cancelada pelo usuario")
+        try:
+            candidate_digest = digest_cache.get(candidate)
+            if candidate_digest is None:
+                candidate_digest = file_sha256(candidate, cancel_event=cancel_event)
+                digest_cache[candidate] = candidate_digest
+        except OSError:
+            continue
+        if candidate_digest == source_digest:
+            return candidate, source_digest
+    return None, source_digest
 
 
 def scan_external_candidates(
@@ -825,27 +905,69 @@ def scan_external_candidates(
     *,
     min_score: int,
     max_files: int | None,
+    base_files: list[Path] | None = None,
+    populate_base: bool = False,
+    cancel_event: threading.Event | None = None,
+    warnings: list[str] | None = None,
 ) -> list[ExternalCandidate]:
     candidates: list[ExternalCandidate] = []
+    base_by_size = size_index(base_files or []) if populate_base else {}
+    digest_cache: dict[Path, str] = {}
+    skipped_existing = 0
     for drive in drives:
+        if is_cancelled(cancel_event):
+            break
         for path in iter_files(drive, max_files=max_files):
+            if is_cancelled(cancel_event):
+                break
             score, reasons = candidate_score(path)
             if score < min_score:
                 continue
             try:
                 size = path.stat().st_size
             except OSError:
-                size = None
+                if populate_base and warnings is not None:
+                    warnings.append(f"nao foi possivel ler candidato externo: {path}")
+                continue
+            sha256: str | None = None
+            duplicate_of: str | None = None
+            if populate_base:
+                try:
+                    existing, sha256 = existing_file_match(
+                        path,
+                        base_by_size,
+                        digest_cache,
+                        cancel_event=cancel_event,
+                    )
+                except OSError as exc:
+                    if warnings is not None:
+                        warnings.append(f"nao foi possivel comparar {path}: {exc}")
+                    continue
+                if existing is not None:
+                    skipped_existing += 1
+                    continue
+                destination, target_reason = populate_base_target_for_external(root, path, drive)
+                decision = "popular_base"
+                candidate_reasons = [*reasons, target_reason, "conteudo ausente na base atual"]
+            else:
+                destination = import_target_for_external(root, path, drive)
+                decision = "copy_to_inbox"
+                candidate_reasons = list(reasons)
             candidates.append(
                 ExternalCandidate(
                     source=str(path),
-                    destination=str(import_target_for_external(root, path, drive)),
+                    destination=str(destination),
                     drive=str(drive),
                     score=score,
-                    reasons=reasons,
+                    reasons=candidate_reasons,
                     size=size,
+                    sha256=sha256,
+                    duplicate_of=duplicate_of,
+                    decision=decision,
                 )
             )
+    if skipped_existing and warnings is not None:
+        warnings.append(f"{skipped_existing} candidato(s) externo(s) ignorado(s) porque ja existem na base")
     candidates.sort(key=lambda item: (-item.score, item.source.lower()))
     return candidates
 
@@ -862,6 +984,7 @@ def scan_projects(
     no_hash: bool = False,
     include_cad_duplicates: bool = False,
     hash_workers: int = 1,
+    populate_base: bool = False,
     cancel_event: threading.Event | None = None,
 ) -> ProjectReport:
     if not root.exists():
@@ -908,11 +1031,17 @@ def scan_projects(
         if not drives:
             report.warnings.append("nenhum drive externo/removivel encontrado para varredura")
         else:
+            roots = canonical_roots(root)
+            base_files = [path for path in all_files if is_inside_any(path, [roots["base"]])]
             report.external_candidates = scan_external_candidates(
                 root,
                 drives,
                 min_score=min_external_score,
                 max_files=max_files,
+                base_files=base_files,
+                populate_base=populate_base,
+                cancel_event=cancel_event,
+                warnings=report.warnings,
             )
     return report
 
@@ -928,13 +1057,26 @@ def write_report(report: ProjectReport, output_dir: Path) -> tuple[Path, Path, P
 
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["section", "source", "destination", "reason", "extra"])
+        writer.writerow(["section", "source", "destination", "reason", "decision", "duplicate_of", "sha256", "extra"])
         for item in report.organization:
-            writer.writerow(["organization", item.source, item.destination, item.reason, ""])
+            writer.writerow(["organization", item.source, item.destination, item.reason, item.action, "", "", ""])
         for item in report.duplicates:
-            writer.writerow(["duplicates", item.source, item.destination, item.reason, f"keeper={item.keeper}"])
+            writer.writerow(
+                ["duplicates", item.source, item.destination, item.reason, "move_duplicate", item.keeper, item.sha256, ""]
+            )
         for item in report.external_candidates:
-            writer.writerow(["external", item.source, item.destination, "; ".join(item.reasons), f"score={item.score}"])
+            writer.writerow(
+                [
+                    "external",
+                    item.source,
+                    item.destination,
+                    "; ".join(item.reasons),
+                    item.decision,
+                    item.duplicate_of or "",
+                    item.sha256 or "",
+                    f"score={item.score}",
+                ]
+            )
 
     lines = [
         "# Relatorio Arruma Projetos",

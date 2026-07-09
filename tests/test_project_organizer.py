@@ -133,6 +133,63 @@ class ProjectOrganizerTests(unittest.TestCase):
 
             self.assertEqual(report.stats["duplicate_moves"], 1)
 
+    def test_populate_base_external_scan_skips_content_already_in_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as external_tmp:
+            root = Path(tmp)
+            base = root / "projetos" / "Ramtech" / "Projetos"
+            base.mkdir(parents=True)
+            (base / "P20051-EXISTENTE.pdf").write_bytes(b"ja existe")
+
+            drive = Path(external_tmp)
+            external_project = drive / "Ramtech" / "P20051 - Cliente"
+            external_project.mkdir(parents=True)
+            existing_copy = external_project / "P20051-EXISTENTE copia.pdf"
+            existing_copy.write_bytes(b"ja existe")
+            missing = external_project / "P20051-NOVO.pdf"
+            missing.write_bytes(b"conteudo novo")
+
+            report = scan_projects(
+                root,
+                external=True,
+                external_drives=[drive],
+                populate_base=True,
+                no_hash=True,
+                min_external_score=6,
+            )
+
+            self.assertEqual([Path(item.source).name for item in report.external_candidates], [missing.name])
+            candidate = report.external_candidates[0]
+            self.assertEqual(candidate.decision, "popular_base")
+            self.assertIn("conteudo ausente na base atual", candidate.reasons)
+            self.assertIn("projetos", Path(candidate.destination).parts)
+            self.assertNotIn("_arruma_projetos", Path(candidate.destination).parts)
+            self.assertTrue(any("ja existem na base" in warning for warning in report.warnings))
+
+    def test_populate_base_apply_copies_missing_external_candidate_to_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as external_tmp:
+            root = Path(tmp)
+            (root / "projetos").mkdir()
+            drive = Path(external_tmp)
+            source = drive / "Opcao" / "OP-0041-001-XXX REV00 - Suporte.pdf"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"novo opcao")
+
+            report = scan_projects(
+                root,
+                external=True,
+                external_drives=[drive],
+                populate_base=True,
+                no_hash=True,
+                min_external_score=6,
+            )
+            result = apply_report(report, organize=False, duplicates=False, import_external=True, yes=True)
+
+            self.assertEqual(len(result["copied_pairs"]), 1)
+            _, destination = result["copied_pairs"][0]
+            self.assertTrue(Path(destination).exists())
+            self.assertEqual(Path(destination).read_bytes(), b"novo opcao")
+            self.assertIn("projetos", Path(destination).parts)
+
 
 if __name__ == "__main__":
     unittest.main()

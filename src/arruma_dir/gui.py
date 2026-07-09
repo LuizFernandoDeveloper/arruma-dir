@@ -78,6 +78,7 @@ class ArrumaDirApp(tk.Tk):
         self.full_duplicates_var = tk.BooleanVar(value=False)
         self.cad_duplicates_var = tk.BooleanVar(value=False)
         self.external_var = tk.BooleanVar(value=False)
+        self.external_drives_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Pronto")
         self.hardware_profile: HardwareProfile | None = None
         self.performance_var = tk.StringVar(value="balanced")
@@ -211,8 +212,27 @@ class ArrumaDirApp(tk.Tk):
         self.cad_duplicates_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.external_check = ttk.Checkbutton(options, text="Vasculhar HDs externos", variable=self.external_var)
         self.external_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.external_drive_frame = ttk.Frame(options)
+        self.external_drive_frame.grid(row=5, column=0, sticky="ew", pady=(6, 0))
+        self.external_drive_frame.columnconfigure(0, weight=1)
+        self.external_entry = ttk.Entry(self.external_drive_frame, textvariable=self.external_drives_var, width=34)
+        self.external_entry.grid(row=0, column=0, sticky="ew")
+        self.external_choose_button = ttk.Button(
+            self.external_drive_frame,
+            text="HD...",
+            command=self.choose_external_drive,
+            width=7,
+        )
+        self.external_choose_button.grid(row=0, column=1, padx=(6, 0))
+        self.external_clear_button = ttk.Button(
+            self.external_drive_frame,
+            text="Limpar",
+            command=self.clear_external_drives,
+            width=8,
+        )
+        self.external_clear_button.grid(row=0, column=2, padx=(6, 0))
         performance_box = ttk.Frame(options)
-        performance_box.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        performance_box.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(performance_box, text="Desempenho").pack(side="left", anchor="w")
         self.performance_combo = ttk.Combobox(
             performance_box,
@@ -237,10 +257,12 @@ class ArrumaDirApp(tk.Tk):
         self.move_duplicates_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
         self.apply_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.populate_base_button = ttk.Button(actions, text="Popular base", command=self.populate_base)
+        self.populate_base_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         self.rollback_button = ttk.Button(actions, text="Voltar ultima acao", command=self.rollback_last_action)
-        self.rollback_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.rollback_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         self.stop_button = ttk.Button(actions, text="Parar Operacao", command=self.cancel_operation, style="Stop.TButton")
-        self.stop_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        self.stop_button.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         self.stop_button.grid_remove()
 
 
@@ -409,7 +431,7 @@ class ArrumaDirApp(tk.Tk):
         if stats["duplicate_moves"]:
             options.append("mova duplicatas exatas para quarentena")
         if stats["external_candidates"]:
-            options.append("importe candidatos de HD externo depois de revisar score e origem")
+            options.append("clique Popular base depois de revisar os candidatos externos")
         return "Opcoes seguras: " + "; ".join(options) + "."
 
     def _make_tree(self, parent: ttk.Notebook, columns: tuple[str, ...], headings: tuple[str, ...]) -> ttk.Treeview:
@@ -456,18 +478,28 @@ class ArrumaDirApp(tk.Tk):
             self.full_duplicates_check.configure(state="normal")
             self.cad_duplicates_check.configure(state="normal")
             self.external_check.configure(state="normal")
+            self.external_entry.configure(state="normal")
+            self.external_choose_button.configure(state="normal")
+            self.external_clear_button.configure(state="normal")
             self.safety_var.set("Projetos/CAD: arvores SolidWorks, Electrical, EPLAN e AutoCAD sao preservadas por padrao.")
         else:
             self.compat_check.configure(state="normal")
             self.full_duplicates_check.configure(state="normal")
             self.cad_duplicates_check.configure(state="disabled")
             self.external_check.configure(state="disabled")
+            self.external_entry.configure(state="disabled")
+            self.external_choose_button.configure(state="disabled")
+            self.external_clear_button.configure(state="disabled")
             self.safety_var.set("Documentos/PARA: gere uma previa, revise destinos e aplique somente com confirmacao.")
 
     def _set_action_buttons(self) -> None:
         has_document_scan = self.scan_result is not None and self.active_mode == MODE_DOCUMENTS
         has_project_scan = self.project_report is not None and self.active_mode == MODE_PROJECTS
         has_scan = has_document_scan or has_project_scan
+        has_apply_plan = bool(
+            (self.scan_result and self.scan_result.plan)
+            or (self.project_report and self.project_report.organization)
+        )
         has_duplicates = bool(
             (self.scan_result and self.scan_result.duplicates)
             or (self.project_report and self.project_report.duplicates)
@@ -476,7 +508,10 @@ class ArrumaDirApp(tk.Tk):
         disabled = "disabled"
         self.scan_button.configure(state=disabled if self.busy else normal)
         self.export_button.configure(state=normal if has_scan and not self.busy else disabled)
-        self.apply_button.configure(state=normal if has_scan and not self.busy else disabled)
+        self.apply_button.configure(state=normal if has_apply_plan and not self.busy else disabled)
+        self.populate_base_button.configure(
+            state=normal if self.mode_var.get() == MODE_PROJECTS and not self.busy else disabled
+        )
         self.move_duplicates_button.configure(state=normal if has_duplicates and not self.busy else disabled)
         self.move_selected_button.configure(state=normal if has_duplicates and not self.busy else disabled)
         self.rollback_button.configure(state=normal if self.rollback_move_pairs and not self.busy else disabled)
@@ -485,6 +520,39 @@ class ArrumaDirApp(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.path_var.get() or str(Path.home()))
         if selected:
             self.path_var.set(selected)
+
+    def choose_external_drive(self) -> None:
+        initial = self.external_drives_var.get().split(";")[0].strip() or self.path_var.get()
+        selected = filedialog.askdirectory(initialdir=initial)
+        if not selected:
+            return
+        current = self._parse_external_drives(allow_missing=True)
+        selected_path = Path(selected)
+        if all(path.resolve(strict=False) != selected_path.resolve(strict=False) for path in current):
+            current.append(selected_path)
+        self.external_drives_var.set("; ".join(str(path) for path in current))
+        self.external_var.set(True)
+
+    def clear_external_drives(self) -> None:
+        self.external_drives_var.set("")
+
+    def _parse_external_drives(self, *, allow_missing: bool = False) -> list[Path]:
+        raw = self.external_drives_var.get().replace("\n", ";")
+        drives: list[Path] = []
+        seen: set[Path] = set()
+        for item in raw.split(";"):
+            value = item.strip().strip('"')
+            if not value:
+                continue
+            path = Path(value)
+            resolved = path.resolve(strict=False)
+            if resolved in seen:
+                continue
+            if not allow_missing and not path.exists():
+                raise FileNotFoundError(f"HD/pasta externa nao encontrada: {path}")
+            seen.add(resolved)
+            drives.append(path)
+        return drives
 
     def _auto_select_mode_for_path(self) -> None:
         path = Path(self.path_var.get()).expanduser()
@@ -659,6 +727,16 @@ class ArrumaDirApp(tk.Tk):
 
         workers, hardware_summary = self._get_workers()
         self._append_log(f"Usando perfil de hardware: {hardware_summary}")
+        try:
+            external_drives = (
+                self._parse_external_drives()
+                if self.mode_var.get() == MODE_PROJECTS and self.external_var.get() and self.external_drives_var.get().strip()
+                else []
+            )
+        except FileNotFoundError as exc:
+            self._finish_busy()
+            messagebox.showerror("HD externo invalido", str(exc))
+            return
 
         thread = threading.Thread(
             target=self._scan_worker,
@@ -670,6 +748,8 @@ class ArrumaDirApp(tk.Tk):
                 self.full_duplicates_var.get(),
                 self.cad_duplicates_var.get(),
                 self.external_var.get(),
+                external_drives,
+                False,
                 workers,
                 self.cancel_event,
             ),
@@ -696,19 +776,28 @@ class ArrumaDirApp(tk.Tk):
         full_duplicates: bool,
         include_cad_duplicates: bool,
         external: bool,
+        external_drives: list[Path],
+        populate_base: bool,
         workers: int,
         cancel_event: threading.Event,
     ) -> None:
         try:
             if mode == MODE_PROJECTS:
-                self.work_queue.put(("status", "Projetos/CAD: analisando estrutura e duplicatas..."))
+                status = (
+                    "Popular base: comparando HDs externos com a base..."
+                    if populate_base
+                    else "Projetos/CAD: analisando estrutura e duplicatas..."
+                )
+                self.work_queue.put(("status", status))
                 result = scan_projects(
                     Path(path),
                     external=external,
+                    external_drives=external_drives or None,
                     no_hash=not include_duplicates,
                     max_hash_size_mb=None if full_duplicates else 2048,
                     include_cad_duplicates=include_cad_duplicates,
                     hash_workers=workers,
+                    populate_base=populate_base,
                     cancel_event=cancel_event,
                 )
                 self.work_queue.put(("project_scan_done", result))
@@ -736,7 +825,10 @@ class ArrumaDirApp(tk.Tk):
             return
         if self.active_mode == MODE_PROJECTS:
             if not self.project_report or not self.project_report.organization:
-                messagebox.showinfo("Arruma Dir", "Nenhum plano de projetos carregado.")
+                if self.project_report and self.project_report.external_candidates:
+                    messagebox.showinfo("Arruma Dir", "Revise os candidatos externos e use o botao Popular base.")
+                else:
+                    messagebox.showinfo("Arruma Dir", "Nenhum plano de projetos carregado.")
                 return
             count = len(self.project_report.organization)
             if not self._confirm_action(
@@ -767,6 +859,90 @@ class ArrumaDirApp(tk.Tk):
         self._set_busy("Aplicando organizacao...")
         progress_callback = self._create_progress_callback()
         thread = threading.Thread(target=self._apply_worker, args=(self.cancel_event, progress_callback), daemon=True)
+        thread.start()
+
+    def populate_base(self) -> None:
+        if self.mode_var.get() != MODE_PROJECTS:
+            messagebox.showinfo("Arruma Dir", "Popular base esta disponivel no modo Projetos/CAD.")
+            return
+
+        if self.project_report and self.active_mode == MODE_PROJECTS:
+            candidates = [item for item in self.project_report.external_candidates if item.decision == "popular_base"]
+            if candidates:
+                if not self._require_same_root():
+                    return
+                count = len(candidates)
+                if not self._confirm_action(
+                    "Popular base",
+                    f"Copiar {count} item(ns) ausente(s) dos HDs externos para a base de projetos?\n\n"
+                    "Nada sera removido dos HDs externos. Arquivos ja existentes por conteudo foram ignorados na previa.",
+                    code="POPULAR",
+                ):
+                    return
+                self._set_busy("Popular base: copiando itens ausentes...")
+                progress_callback = self._create_progress_callback()
+                thread = threading.Thread(
+                    target=self._project_apply_worker,
+                    args=("populate_base", None, self.cancel_event, progress_callback),
+                    daemon=True,
+                )
+                thread.start()
+                return
+
+        path = self.path_var.get().strip()
+        if not path:
+            messagebox.showwarning("Arruma Dir", "Escolha a raiz da base de projetos.")
+            return
+        self.mode_var.set(MODE_PROJECTS)
+        self._update_mode_controls()
+        if self._check_current_root() is None:
+            return
+        try:
+            external_drives = self._parse_external_drives()
+        except FileNotFoundError as exc:
+            messagebox.showerror("HD externo invalido", str(exc))
+            return
+        if not external_drives:
+            messagebox.showinfo("Arruma Dir", "Selecione pelo menos um HD ou pasta externa para popular a base.")
+            return
+
+        self.external_var.set(True)
+        self.cancel_event.clear()
+        self._set_busy(
+            "Popular base: vasculhando HDs externos...",
+            indeterminate=True,
+            detail="Comparando com a base por conteudo.",
+        )
+        self.scan_result = None
+        self.project_report = None
+        self.active_mode = None
+        self.active_root = None
+        self._clear_tree(self.plan_tree)
+        self._clear_tree(self.duplicate_tree)
+        self._clear_charts()
+        self.duplicate_rows.clear()
+        self._reset_summary()
+        self.next_step_var.set("Popular base esta gerando uma previa. Revise o Plano antes de copiar.")
+
+        workers, hardware_summary = self._get_workers()
+        self._append_log(f"Usando perfil de hardware: {hardware_summary}")
+        thread = threading.Thread(
+            target=self._scan_worker,
+            args=(
+                path,
+                MODE_PROJECTS,
+                False,
+                False,
+                False,
+                False,
+                True,
+                external_drives,
+                True,
+                workers,
+                self.cancel_event,
+            ),
+            daemon=True,
+        )
         thread.start()
 
     def _apply_worker(self, cancel_event: threading.Event, progress_callback: Callable[[int, int], None]) -> None:
@@ -938,6 +1114,23 @@ class ArrumaDirApp(tk.Tk):
                     organize=False,
                     duplicates=True,
                     import_external=False,
+                    yes=True,
+                    cancel_event=cancel_event,
+                    progress_callback=progress_callback,
+                )
+            elif action == "populate_base":
+                report = ProjectReport(
+                    root=self.project_report.root,
+                    generated_at=self.project_report.generated_at,
+                    external_candidates=[
+                        item for item in self.project_report.external_candidates if item.decision == "popular_base"
+                    ],
+                )
+                result = apply_project_report(
+                    report,
+                    organize=False,
+                    duplicates=False,
+                    import_external=True,
                     yes=True,
                     cancel_event=cancel_event,
                     progress_callback=progress_callback,
@@ -1121,8 +1314,8 @@ class ArrumaDirApp(tk.Tk):
                 "",
                 "end",
                 values=(
-                    "copy",
-                    "HD externo",
+                    item.decision,
+                    "Popular base" if item.decision == "popular_base" else "HD externo",
                     item.source,
                     item.destination,
                     f"score {item.score}: {', '.join(item.reasons)}",
@@ -1330,6 +1523,9 @@ class ArrumaDirApp(tk.Tk):
                         destination=item.destination,
                         reasons=item.reasons,
                         size=item.size,
+                        sha256=item.sha256,
+                        duplicate_of=item.duplicate_of,
+                        decision=item.decision,
                     )
                 )
             for item in report.warnings:

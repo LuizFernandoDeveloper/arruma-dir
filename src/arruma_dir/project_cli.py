@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--output-dir", default=None)
     scan.add_argument("--external", action="store_true", help="vasculha drives externos/removiveis")
     scan.add_argument("--external-drive", action="append", default=[], help="drive explicito, ex: G:\\")
+    scan.add_argument(
+        "--populate-base",
+        action="store_true",
+        help="popular base: copia somente candidatos ausentes para destinos dentro de projetos",
+    )
     scan.add_argument("--include-fixed-external", action="store_true", help="inclui drives fixos nao-C alem de removiveis")
     scan.add_argument("--min-external-score", type=int, default=7)
     scan.add_argument("--max-files", type=int, default=None)
@@ -125,6 +130,9 @@ def log_project_report(logger: logging.Logger | None, report: ProjectReport) -> 
                 destination=item.destination,
                 reasons=item.reasons,
                 size=item.size,
+                sha256=item.sha256,
+                duplicate_of=item.duplicate_of,
+                decision=item.decision,
             )
         )
     for item in report.warnings:
@@ -160,7 +168,10 @@ def print_project_report_details(report: ProjectReport) -> None:
     for item in report.duplicates:
         print(f"Duplicata: {item.source} -> {item.destination} | principal={item.keeper}")
     for item in report.external_candidates:
-        print(f"HD externo: score={item.score} | {item.source} -> {item.destination} | {', '.join(item.reasons)}")
+        print(
+            f"HD externo: {item.decision} | score={item.score} | "
+            f"{item.source} -> {item.destination} | {', '.join(item.reasons)}"
+        )
     for item in report.warnings:
         print(f"Aviso: {item}")
     for item in report.errors:
@@ -195,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                     "project_cli.scan_options",
                     external=args.external,
                     drives=args.external_drive,
+                    populate_base=args.populate_base,
                     include_fixed_external=args.include_fixed_external,
                     min_external_score=args.min_external_score,
                     max_files=args.max_files,
@@ -205,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         report = scan_projects(
             root,
-            external=args.external,
+            external=args.external or args.populate_base,
             external_drives=drives or None,
             include_fixed_external=args.include_fixed_external,
             min_external_score=args.min_external_score,
@@ -214,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             no_hash=args.no_hash,
             include_cad_duplicates=args.include_cad_duplicates,
             hash_workers=workers,
+            populate_base=args.populate_base,
         )
         log_project_report(logger, report)
         json_path, csv_path, md_path = write_report(report, output_dir)

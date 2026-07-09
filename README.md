@@ -197,6 +197,7 @@ Aplicar plano revisado | `arruma-dir apply "C:\Users\luizf\OneDrive\Documentos" 
 Mover duplicatas seguras | `arruma-dir dedupe "C:\Users\luizf\OneDrive\Documentos" --yes`
 Previa de projetos | `arruma-projetos scan --root "F:\projetos"`
 Projetos com HD externo | `arruma-projetos scan --root "F:\projetos" --external`
+Popular base por HD externo | `arruma-projetos scan --root "F:\projetos" --populate-base --external-drive "E:\" --external-drive "H:\"`
 Aplicar organizacao de projetos | `arruma-projetos apply --report RELATORIO.json --organize --yes`
 Quarentena de duplicatas de projetos | `arruma-projetos apply --report RELATORIO.json --duplicates --yes`
 Gerar executavel | `.\scripts\build_exe.ps1`
@@ -264,6 +265,12 @@ Vasculhar HDs externos:
 
 ```powershell
 arruma-projetos scan --root "F:\projetos" --external
+```
+
+Popular base: comparar HDs externos com a base e propor somente arquivos ausentes:
+
+```powershell
+arruma-projetos scan --root "F:\projetos" --populate-base --external-drive "E:\" --external-drive "H:\"
 ```
 
 Importar candidatos encontrados em HD externo:
