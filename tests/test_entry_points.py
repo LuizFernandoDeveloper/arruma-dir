@@ -59,6 +59,11 @@ class EntryPointTests(unittest.TestCase):
 
         self.assertTrue(hasattr(project_organizer, "scan_projects"))
 
+    def test_gui_exposes_rollback_handler(self) -> None:
+        from arruma_dir.gui import ArrumaDirApp
+
+        self.assertTrue(callable(getattr(ArrumaDirApp, "rollback_last_action", None)))
+
     def test_legacy_project_script_points_to_project_cli(self) -> None:
         script_path = Path("scripts") / "organiza_projetos.py"
         tree = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))

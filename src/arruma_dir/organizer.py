@@ -789,6 +789,48 @@ def apply_plan(
     return result
 
 
+def rollback_moves(
+    moves: Iterable[tuple[str, str]],
+    root: str | Path,
+    *,
+    dry_run: bool = False,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> ApplyResult:
+    root_path = Path(root).expanduser()
+    result = ApplyResult()
+    moves_list = list(moves)
+    total_items = len(moves_list)
+
+    for index, (original_path, current_path) in enumerate(reversed(moves_list), start=1):
+        if progress_callback:
+            progress_callback(index, total_items)
+        if is_cancelled(cancel_event):
+            raise InterruptedError("Reversao cancelada pelo usuario.")
+
+        original = Path(original_path)
+        current = Path(current_path)
+        try:
+            ensure_inside(root_path, original)
+            ensure_inside(root_path, current)
+            if not current.exists():
+                result.skipped.append(f"nao existe para voltar: {current}")
+                continue
+            if original.exists():
+                result.errors.append(f"destino original ocupado: {original}")
+                continue
+            if dry_run:
+                result.moved.append((str(current), str(original)))
+                continue
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(current), str(original))
+            result.moved.append((str(current), str(original)))
+        except Exception as exc:  # noqa: BLE001 - CLI/GUI report all filesystem failures.
+            result.errors.append(f"{current}: {exc}")
+
+    return result
+
+
 def _merge_directory(
     source: Path, destination: Path, *, dry_run: bool = False, cancel_event: threading.Event | None = None
 ) -> list[tuple[str, str]]:

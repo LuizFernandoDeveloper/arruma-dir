@@ -10,6 +10,7 @@ from arruma_dir.logging_utils import close_logger, create_operation_logger
 from arruma_dir.project_organizer import (
     DEFAULT_ROOT,
     REPORTS_DIR,
+    ProjectApplyResult,
     ProjectReport,
     apply_report,
     create_opcao_template,
@@ -126,7 +127,7 @@ def log_project_report(logger: logging.Logger | None, report: ProjectReport) -> 
         logger.error("%s", item)
 
 
-def log_project_apply(logger: logging.Logger | None, result: dict[str, list[str]]) -> None:
+def log_project_apply(logger: logging.Logger | None, result: ProjectApplyResult) -> None:
     if logger is None:
         return
     logger.info(
@@ -158,7 +159,7 @@ def print_project_report_details(report: ProjectReport) -> None:
         print(f"Erro: {item}", file=sys.stderr)
 
 
-def print_result(result: dict[str, list[str]], *, limit: int | None = 30) -> None:
+def print_result(result: ProjectApplyResult, *, limit: int | None = 30) -> None:
     for key in ("moved", "copied", "skipped", "errors"):
         values = result[key]
         print(f"{key}: {len(values)}")

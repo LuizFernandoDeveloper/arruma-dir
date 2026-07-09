@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from arruma_dir.project_organizer import (
+    apply_report,
     build_organization_plan,
     create_opcao_template,
     scan_projects,
@@ -56,6 +57,22 @@ class ProjectOrganizerTests(unittest.TestCase):
 
             self.assertEqual(report.stats["organization_moves"], 1)
             self.assertIn("Opcao", report.organization[0].destination)
+
+    def test_apply_report_records_structured_move_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "organizar" / "4- Projeto Mecanico"
+            staging.mkdir(parents=True)
+            (staging / "CABOS").mkdir()
+
+            report = scan_projects(root, no_hash=True)
+            result = apply_report(report, organize=True, duplicates=False, import_external=False, yes=True)
+
+            self.assertEqual(len(result["moved"]), 1)
+            self.assertEqual(len(result["moved_pairs"]), 1)
+            source, destination = result["moved_pairs"][0]
+            self.assertFalse(Path(source).exists())
+            self.assertTrue(Path(destination).exists())
 
     def test_scan_reports_file_and_directory_composition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

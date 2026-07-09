@@ -6,14 +6,12 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-    from matplotlib.figure import Figure
-
     from arruma_dir.hardware import HardwareProfile
 
+from arruma_dir.gui_charts import LazyChartDeck
 from arruma_dir.hardware import detect_hardware, disk_usage_for, normalize_performance_mode
 
 from arruma_dir.logging_utils import close_logger, create_operation_logger
@@ -26,6 +24,7 @@ from arruma_dir.organizer import (
     is_batch_safe_duplicate_group,
     move_duplicates_to_quarantine,
     move_files_to_quarantine,
+    rollback_moves,
     scan_directory,
     write_scan_json,
 )
@@ -33,6 +32,7 @@ from arruma_dir.project_organizer import (
     DEFAULT_ROOT as DEFAULT_PROJECTS_ROOT,
     REPORTS_DIR,
     DuplicateOperation,
+    ProjectApplyResult,
     ProjectReport,
     apply_report as apply_project_report,
     scan_projects,
@@ -66,6 +66,10 @@ class ArrumaDirApp(tk.Tk):
         self.duplicate_rows: dict[str, dict[str, object]] = {}
         self.work_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
+        self.rollback_move_pairs: list[tuple[str, str]] = []
+        self.rollback_root: str | None = None
+        self.rollback_mode: str | None = None
+        self.rollback_label = ""
 
         self.mode_var = tk.StringVar(value=MODE_DOCUMENTS)
         self.path_var = tk.StringVar(value=str(default_documents_path()))
@@ -91,15 +95,8 @@ class ArrumaDirApp(tk.Tk):
         }
         self.progress_var = tk.DoubleVar(value=0.0)
         self.progress_text_var = tk.StringVar(value="")
-
-        self.summary_chart_frame: ttk.Frame | None = None
-        self.summary_chart_canvas: FigureCanvasTkAgg | None = None
-        self.summary_chart_figure: Figure | None = None
-        self.summary_chart_ax: Any | None = None
-        self.directory_chart_frame: ttk.Frame | None = None
-        self.directory_chart_canvas: FigureCanvasTkAgg | None = None
-        self.directory_chart_figure: Figure | None = None
-        self.directory_chart_ax: Any | None = None
+        self.progress_is_indeterminate = False
+        self.charts: LazyChartDeck | None = None
 
         self._configure_style()
         self._build_layout()
@@ -140,7 +137,7 @@ class ArrumaDirApp(tk.Tk):
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
- 
+
         header = tk.Frame(self, bg=HEADER_BG, padx=18, pady=14)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
@@ -240,8 +237,10 @@ class ArrumaDirApp(tk.Tk):
         self.move_duplicates_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
         self.apply_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.rollback_button = ttk.Button(actions, text="Voltar ultima acao", command=self.rollback_last_action)
+        self.rollback_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         self.stop_button = ttk.Button(actions, text="Parar Operacao", command=self.cancel_operation, style="Stop.TButton")
-        self.stop_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.stop_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         self.stop_button.grid_remove()
 
 
@@ -292,21 +291,12 @@ class ArrumaDirApp(tk.Tk):
         )
         notebook.add(self.duplicate_tree.master, text="Repetidos")
 
-        self.summary_chart_frame = ttk.Frame(notebook)
-        ttk.Label(
-            self.summary_chart_frame,
-            text="Gere uma previa para ver o grafico.",
-            style="Muted.TLabel",
-        ).pack(expand=True)
-        notebook.add(self.summary_chart_frame, text="Tipos")
+        summary_chart_frame = ttk.Frame(notebook)
+        directory_chart_frame = ttk.Frame(notebook)
+        self.charts = LazyChartDeck(summary_chart_frame, directory_chart_frame, log=self._append_log)
 
-        self.directory_chart_frame = ttk.Frame(notebook)
-        ttk.Label(
-            self.directory_chart_frame,
-            text="Gere uma previa para ver os diretorios.",
-            style="Muted.TLabel",
-        ).pack(expand=True)
-        notebook.add(self.directory_chart_frame, text="Diretórios")
+        notebook.add(summary_chart_frame, text="Tipos")
+        notebook.add(directory_chart_frame, text="Diretórios")
 
         self.log = tk.Text(notebook, height=8, wrap="word")
         self.log.configure(state="disabled")
@@ -322,7 +312,7 @@ class ArrumaDirApp(tk.Tk):
         self.progress_frame.grid(row=0, column=1, sticky="ew", padx=(20, 0))
         self.progress_frame.columnconfigure(1, weight=1)
 
-        self.progress_text_label = ttk.Label(self.progress_frame, textvariable=self.progress_text_var)
+        self.progress_text_label = ttk.Label(self.progress_frame, textvariable=self.progress_text_var, width=34)
         self.progress_text_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.progress_bar = ttk.Progressbar(self.progress_frame, variable=self.progress_var)
@@ -358,152 +348,17 @@ class ArrumaDirApp(tk.Tk):
             self.disk_usage_var.set("Uso do disco: (nao foi possivel ler)")
             self.disk_percent_var.set(0.0)
 
-    def _ensure_chart_canvases(self) -> bool:
-        if self.summary_chart_ax and self.directory_chart_ax:
-            return True
-        if not self.summary_chart_frame or not self.directory_chart_frame:
-            return False
-
-        try:
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-            from matplotlib.figure import Figure
-        except Exception as exc:  # noqa: BLE001 - charts are optional for the GUI flow.
-            self._append_log(f"Graficos indisponiveis: {exc}")
-            return False
-
-        for child in self.summary_chart_frame.winfo_children():
-            child.destroy()
-        self.summary_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
-        self.summary_chart_ax = self.summary_chart_figure.add_subplot(111)
-        self.summary_chart_ax.set_facecolor(APP_BG)
-        self.summary_chart_figure.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
-        self.summary_chart_canvas = FigureCanvasTkAgg(self.summary_chart_figure, self.summary_chart_frame)
-        self.summary_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        for child in self.directory_chart_frame.winfo_children():
-            child.destroy()
-        self.directory_chart_figure = Figure(figsize=(5, 4), dpi=100, facecolor=APP_BG)
-        self.directory_chart_ax = self.directory_chart_figure.add_subplot(111)
-        self.directory_chart_ax.set_facecolor(APP_BG)
-        self.directory_chart_figure.subplots_adjust(left=0.28, right=0.95, top=0.9, bottom=0.12)
-        self.directory_chart_canvas = FigureCanvasTkAgg(self.directory_chart_figure, self.directory_chart_frame)
-        self.directory_chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        return True
-
-    def _clear_pie_chart(self) -> None:
-        if not self.summary_chart_ax:
-            return
-        self.summary_chart_ax.clear()
-        self.summary_chart_ax.set_title("Distribuicao de Arquivos por Tipo", color=MUTED_FG)
-        self.summary_chart_ax.text(
-            0.5,
-            0.5,
-            "Gere uma previa para ver o grafico.",
-            ha="center",
-            va="center",
-            color=MUTED_FG,
-            fontsize=10,
-        )
-        if self.summary_chart_canvas:
-            self.summary_chart_canvas.draw()
-
-    def _clear_directory_chart(self) -> None:
-        if not self.directory_chart_ax:
-            return
-        self.directory_chart_ax.clear()
-        self.directory_chart_ax.set_title("Composicao por Diretorio", color=MUTED_FG)
-        self.directory_chart_ax.text(
-            0.5,
-            0.5,
-            "Gere uma previa para ver os diretorios.",
-            ha="center",
-            va="center",
-            color=MUTED_FG,
-            fontsize=10,
-            transform=self.directory_chart_ax.transAxes,
-        )
-        self.directory_chart_ax.set_axis_off()
-        if self.directory_chart_canvas:
-            self.directory_chart_canvas.draw()
-
     def _clear_charts(self) -> None:
-        self._clear_pie_chart()
-        self._clear_directory_chart()
+        if self.charts:
+            self.charts.clear()
 
     def _update_pie_chart(self, summary_data: dict[str, int]) -> None:
-        if not summary_data or sum(summary_data.values()) <= 0:
-            self._clear_pie_chart()
-            return
-        if not self._ensure_chart_canvases():
-            return
-
-        self.summary_chart_ax.clear()
-        total_files = sum(summary_data.values())
-        sorted_data = sorted(summary_data.items(), key=lambda item: item[1], reverse=True)
-
-        labels: list[str] = []
-        sizes: list[int] = []
-        other_size = 0
-        other_count = 0
-
-        for ext, count in sorted_data:
-            if count / total_files > 0.01 and len(labels) < 15:
-                labels.append(f"{ext} ({count})")
-                sizes.append(count)
-            else:
-                other_size += count
-                other_count += 1
-
-        if other_size > 0:
-            labels.append(f"Outros ({other_count} tipos)")
-            sizes.append(other_size)
-
-        wedges, texts, autotexts = self.summary_chart_ax.pie(
-            sizes, labels=labels, autopct="%1.1f%%", startangle=140, pctdistance=0.85
-        )
-        for text in texts:
-            text.set_color("#0f172a")
-        for autotext in autotexts:
-            autotext.set_color("#ffffff")
-        self.summary_chart_ax.set_title(f"Distribuicao de {total_files} Arquivos por Tipo", color="#0f172a")
-        self.summary_chart_ax.axis("equal")
-        if self.summary_chart_canvas:
-            self.summary_chart_canvas.draw()
+        if self.charts:
+            self.charts.update_file_summary(summary_data)
 
     def _update_directory_chart(self, directory_data: dict[str, int]) -> None:
-        if not directory_data or sum(directory_data.values()) <= 0:
-            self._clear_directory_chart()
-            return
-        if not self._ensure_chart_canvases():
-            return
-
-        self.directory_chart_ax.clear()
-        total_files = sum(directory_data.values())
-        sorted_data = sorted(directory_data.items(), key=lambda item: item[1], reverse=True)
-        top_items = sorted_data[:12]
-        other_count = sum(count for _, count in sorted_data[12:])
-        if other_count:
-            top_items.append(("Outros", other_count))
-
-        labels = [name for name, _ in reversed(top_items)]
-        sizes = [count for _, count in reversed(top_items)]
-        colors = ["#2563eb", "#0f766e", "#f59e0b", "#dc2626", "#7c3aed", "#475569"]
-        bar_colors = [colors[index % len(colors)] for index in range(len(labels))]
-
-        self.directory_chart_ax.barh(labels, sizes, color=bar_colors)
-        self.directory_chart_ax.set_title(f"Composicao de {total_files} Arquivos por Diretorio", color="#0f172a")
-        self.directory_chart_ax.set_xlabel("Arquivos")
-        self.directory_chart_ax.tick_params(axis="x", colors="#334155")
-        self.directory_chart_ax.tick_params(axis="y", colors="#334155", labelsize=8)
-        self.directory_chart_ax.grid(axis="x", color="#e2e8f0", linewidth=0.8)
-        self.directory_chart_ax.spines["top"].set_visible(False)
-        self.directory_chart_ax.spines["right"].set_visible(False)
-        self.directory_chart_ax.spines["left"].set_color("#cbd5e1")
-        self.directory_chart_ax.spines["bottom"].set_color("#cbd5e1")
-        for index, count in enumerate(sizes):
-            self.directory_chart_ax.text(count, index, f" {count}", va="center", color="#0f172a", fontsize=8)
-        if self.directory_chart_canvas:
-            self.directory_chart_canvas.draw()
+        if self.charts:
+            self.charts.update_directory_summary(directory_data)
 
     def _reset_summary(self) -> None:
         for value in self.summary_vars.values():
@@ -526,6 +381,36 @@ class ArrumaDirApp(tk.Tk):
         self.summary_vars["external"].set(str(external))
         self.summary_vars["errors"].set(str(errors))
         self.next_step_var.set(next_step)
+
+    def _document_scan_next_step(self, stats: dict[str, int]) -> str:
+        if stats["errors"]:
+            return "Veja a aba Log antes de aplicar. Corrija erros, gere nova previa e so depois mova arquivos."
+        if not stats["planned_moves"] and not stats["exact_duplicate_groups"] and not stats["possible_duplicate_groups"]:
+            return "Nada critico encontrado. A pasta ja parece organizada para este modo."
+
+        options = ["revise Plano e Repetidos"]
+        if stats["exact_duplicate_groups"]:
+            options.append("mova duplicatas seguras")
+        if stats["planned_moves"]:
+            options.append("exporte JSON ou aplique o plano revisado")
+        if stats["possible_duplicate_groups"]:
+            options.append("decida duplicatas possiveis manualmente")
+        return "Opcoes seguras: " + "; ".join(options) + "."
+
+    def _project_scan_next_step(self, stats: dict[str, int]) -> str:
+        if stats["errors"]:
+            return "Veja a aba Log antes de aplicar. Em Projetos/CAD, corrija erros antes de mover qualquer item."
+        if not stats["organization_moves"] and not stats["duplicate_moves"] and not stats["external_candidates"]:
+            return "Nada relevante para mover. A estrutura de Projetos/CAD ja parece preservada."
+
+        options = ["revise o plano sem quebrar referencias CAD"]
+        if stats["organization_moves"]:
+            options.append("aplique organizacao somente se os destinos estiverem corretos")
+        if stats["duplicate_moves"]:
+            options.append("mova duplicatas exatas para quarentena")
+        if stats["external_candidates"]:
+            options.append("importe candidatos de HD externo depois de revisar score e origem")
+        return "Opcoes seguras: " + "; ".join(options) + "."
 
     def _make_tree(self, parent: ttk.Notebook, columns: tuple[str, ...], headings: tuple[str, ...]) -> ttk.Treeview:
         frame = ttk.Frame(parent)
@@ -594,6 +479,7 @@ class ArrumaDirApp(tk.Tk):
         self.apply_button.configure(state=normal if has_scan and not self.busy else disabled)
         self.move_duplicates_button.configure(state=normal if has_duplicates and not self.busy else disabled)
         self.move_selected_button.configure(state=normal if has_duplicates and not self.busy else disabled)
+        self.rollback_button.configure(state=normal if self.rollback_move_pairs and not self.busy else disabled)
 
     def choose_directory(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.path_var.get() or str(Path.home()))
@@ -655,6 +541,94 @@ class ArrumaDirApp(tk.Tk):
     def _create_progress_callback(self) -> Callable[[int, int], None]:
         return lambda current, total: self.work_queue.put(("progress", (current, total)))
 
+    def _remember_rollback(
+        self,
+        *,
+        root: str | None,
+        mode: str | None,
+        label: str,
+        moves: list[tuple[str, str]],
+    ) -> None:
+        self.rollback_root = root
+        self.rollback_mode = mode
+        self.rollback_label = label
+        self.rollback_move_pairs = list(moves)
+        self._set_action_buttons()
+        if moves:
+            self.next_step_var.set(
+                f"Ultima acao pode ser revertida: {len(moves)} movimento(s). Use Voltar ultima acao se precisar."
+            )
+
+    def _clear_rollback(self) -> None:
+        self.rollback_root = None
+        self.rollback_mode = None
+        self.rollback_label = ""
+        self.rollback_move_pairs = []
+        self._set_action_buttons()
+
+    def rollback_last_action(self) -> None:
+        if not self.rollback_move_pairs or not self.rollback_root:
+            self._clear_rollback()
+            messagebox.showinfo("Arruma Dir", "Nao ha uma acao recente para voltar.")
+            return
+
+        rollback_root = Path(self.rollback_root).resolve(strict=False)
+        current_root = Path(self.path_var.get()).resolve(strict=False)
+        if current_root != rollback_root:
+            messagebox.showerror(
+                "Local diferente",
+                "O local atual nao e o mesmo da ultima acao.\n\n"
+                f"Selecione novamente:\n{rollback_root}",
+            )
+            return
+
+        label = self.rollback_label or "ultima acao"
+        count = len(self.rollback_move_pairs)
+        if not self._confirm_action(
+            "Voltar ultima acao",
+            f"Voltar {count} movimento(s) de {label} para o local original?\n\n"
+            "A reversao usa o historico desta execucao. Nada sera apagado; se o local original estiver ocupado, "
+            "o item fica onde esta e o erro aparece no log.",
+            code="VOLTAR",
+        ):
+            return
+
+        root = self.rollback_root
+        mode = self.rollback_mode or self.active_mode or self.mode_var.get()
+        moves = list(self.rollback_move_pairs)
+        self._set_busy("Voltando ultima acao...")
+        self.next_step_var.set("Reversao em andamento. Nao mova arquivos manualmente ate terminar.")
+        progress_callback = self._create_progress_callback()
+        thread = threading.Thread(
+            target=self._rollback_worker,
+            args=(root, mode, label, moves, self.cancel_event, progress_callback),
+            daemon=True,
+        )
+        thread.start()
+
+    def _rollback_worker(
+        self,
+        root: str,
+        mode: str,
+        label: str,
+        moves: list[tuple[str, str]],
+        cancel_event: threading.Event,
+        progress_callback: Callable[[int, int], None],
+    ) -> None:
+        try:
+            result = rollback_moves(
+                moves,
+                root,
+                dry_run=False,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+            self.work_queue.put(("rollback_done", (root, mode, label, moves, result)))
+        except InterruptedError as exc:
+            self.work_queue.put(("cancelled", str(exc) or "Reversao cancelada."))
+        except Exception as exc:  # noqa: BLE001 - shown in GUI.
+            self.work_queue.put(("error", exc))
+
     def scan(self) -> None:
         path = self.path_var.get().strip()
         if not path:
@@ -665,7 +639,14 @@ class ArrumaDirApp(tk.Tk):
             return
 
         self.cancel_event.clear()
-        self._set_busy("Gerando previa...")
+        self._set_busy(
+            "Gerando previa...",
+            indeterminate=True,
+            detail="Analisando... nada sera movido.",
+        )
+        self.next_step_var.set(
+            "A previa esta em andamento. Voce pode parar a operacao; nada sera movido nesta etapa."
+        )
         self.scan_result = None
         self.project_report = None
         self.active_mode = None
@@ -678,8 +659,6 @@ class ArrumaDirApp(tk.Tk):
 
         workers, hardware_summary = self._get_workers()
         self._append_log(f"Usando perfil de hardware: {hardware_summary}")
-
-
 
         thread = threading.Thread(
             target=self._scan_worker,
@@ -722,6 +701,7 @@ class ArrumaDirApp(tk.Tk):
     ) -> None:
         try:
             if mode == MODE_PROJECTS:
+                self.work_queue.put(("status", "Projetos/CAD: analisando estrutura e duplicatas..."))
                 result = scan_projects(
                     Path(path),
                     external=external,
@@ -734,6 +714,7 @@ class ArrumaDirApp(tk.Tk):
                 self.work_queue.put(("project_scan_done", result))
                 return
 
+            self.work_queue.put(("status", "Documentos/PARA: classificando e procurando repetidos..."))
             result = scan_directory(
                 path,
                 compat_names=compat_names,
@@ -1022,8 +1003,12 @@ class ArrumaDirApp(tk.Tk):
                     self._on_apply_done(payload, event)  # type: ignore[arg-type]
                 elif event == "project_apply_done":
                     self._on_project_apply_done(payload)  # type: ignore[arg-type]
+                elif event == "rollback_done":
+                    self._on_rollback_done(payload)  # type: ignore[arg-type]
                 elif event == "progress":
                     self._on_progress(payload)  # type: ignore[arg-type]
+                elif event == "status":
+                    self._on_status(payload)  # type: ignore[arg-type]
                 elif event == "cancelled":
                     self._on_cancelled(payload)  # type: ignore[arg-type]
                 elif event == "error":
@@ -1032,9 +1017,18 @@ class ArrumaDirApp(tk.Tk):
             pass
         self.after(120, self._poll_queue)
 
+    def _on_status(self, message: str) -> None:
+        self.status_var.set(message)
+        self.progress_text_var.set(message)
+        self._append_log(message)
+
     def _on_progress(self, payload: tuple[int, int]) -> None:
         current, total = payload
         if total > 0:
+            if self.progress_is_indeterminate:
+                self.progress_bar.stop()
+                self.progress_bar.configure(mode="determinate")
+                self.progress_is_indeterminate = False
             percent = (current / total) * 100
             self.progress_var.set(percent)
             self.progress_text_var.set(f"{current} de {total}")
@@ -1095,7 +1089,7 @@ class ArrumaDirApp(tk.Tk):
             possible=stats["possible_duplicate_groups"],
             external=0,
             errors=stats["errors"],
-            next_step="Revise as abas Plano e Repetidos. Depois exporte o JSON ou aplique apenas se tudo estiver correto.",
+            next_step=self._document_scan_next_step(stats),
         )
         self._append_log(f"Previa concluida: {result.root}")
         for skipped in result.skipped:
@@ -1167,7 +1161,7 @@ class ArrumaDirApp(tk.Tk):
             possible=0,
             external=stats["external_candidates"],
             errors=stats["errors"],
-            next_step="Revise o plano de Projetos/CAD. Aplique somente depois de confirmar que nenhuma arvore CAD sera quebrada.",
+            next_step=self._project_scan_next_step(stats),
         )
         self._append_log(f"Previa de projetos concluida: {report.root}")
         for warning in report.warnings:
@@ -1196,13 +1190,18 @@ class ArrumaDirApp(tk.Tk):
         for error in result.errors:
             self._append_log(f"Erro: {error}")
         self._write_document_apply_log(result, label)
+        if result.moved and self.active_root:
+            self._remember_rollback(root=self.active_root, mode=MODE_DOCUMENTS, label=label, moves=result.moved)
+        else:
+            self._clear_rollback()
         self._finish_busy()
 
-    def _on_project_apply_done(self, result: dict[str, list[str]]) -> None:
+    def _on_project_apply_done(self, result: ProjectApplyResult) -> None:
         moved = result.get("moved", [])
         copied = result.get("copied", [])
         errors = result.get("errors", [])
         skipped = result.get("skipped", [])
+        move_pairs = list(result.get("moved_pairs", []))
         self.status_var.set(f"Projetos: {len(moved)} movimentos, {len(copied)} copias, {len(errors)} erros")
         self.next_step_var.set("Acao de Projetos/CAD concluida. Gere nova previa antes de aplicar outro lote.")
         self._append_log(f"Projetos: {len(moved)} movimentos, {len(copied)} copias")
@@ -1215,6 +1214,33 @@ class ArrumaDirApp(tk.Tk):
         for item in errors:
             self._append_log(f"Erro: {item}")
         self._write_project_apply_log(result)
+        if move_pairs and self.active_root:
+            self._remember_rollback(root=self.active_root, mode=MODE_PROJECTS, label="Projetos/CAD", moves=move_pairs)
+        else:
+            self._clear_rollback()
+        self._finish_busy()
+
+    def _on_rollback_done(self, payload: tuple[str, str, str, list[tuple[str, str]], ApplyResult]) -> None:
+        root, mode, label, moves, result = payload
+        self.status_var.set(f"Reversao de {label}: {len(result.moved)} movimentos, {len(result.errors)} erros")
+        self._append_log(f"Reversao de {label}: {len(result.moved)} movimentos")
+        for source, destination in result.moved[:80]:
+            self._append_log(f"{source} -> {destination}")
+        for skipped in result.skipped:
+            self._append_log(f"Ignorado: {skipped}")
+        for error in result.errors:
+            self._append_log(f"Erro: {error}")
+        self._write_rollback_log(root, mode, label, result)
+
+        remaining = [(original, current) for original, current in moves if Path(current).exists()]
+        if remaining and (result.errors or result.skipped):
+            self._remember_rollback(root=root, mode=mode, label=label, moves=remaining)
+            self.next_step_var.set(
+                "Reversao parcial. Corrija os itens do log e use Voltar ultima acao para tentar o restante."
+            )
+        else:
+            self._clear_rollback()
+            self.next_step_var.set("Reversao concluida. Gere uma nova previa para validar o estado atual da pasta.")
         self._finish_busy()
 
     def _write_document_scan_log(self, result: ScanResult) -> None:
@@ -1315,7 +1341,7 @@ class ArrumaDirApp(tk.Tk):
             close_logger(logger)
         self._append_log(f"Log completo: {log_path}")
 
-    def _write_project_apply_log(self, result: dict[str, list[str]]) -> None:
+    def _write_project_apply_log(self, result: ProjectApplyResult) -> None:
         if not self.active_root:
             return
         logger, log_path = create_operation_logger(self.active_root, mode=MODE_PROJECTS, operation="gui-project-apply")
@@ -1339,6 +1365,26 @@ class ArrumaDirApp(tk.Tk):
             close_logger(logger)
         self._append_log(f"Log completo: {log_path}")
 
+    def _write_rollback_log(self, root: str, mode: str, label: str, result: ApplyResult) -> None:
+        logger, log_path = create_operation_logger(root, mode=mode, operation="gui-rollback")
+        try:
+            logger.info(
+                "interface=gui acao=reversao label=%s movimentos=%s ignorados=%s erros=%s",
+                label,
+                len(result.moved),
+                len(result.skipped),
+                len(result.errors),
+            )
+            for source, destination in result.moved:
+                logger.info("rollback source=%s destination=%s", source, destination)
+            for item in result.skipped:
+                logger.warning("%s", item)
+            for item in result.errors:
+                logger.error("%s", item)
+        finally:
+            close_logger(logger)
+        self._append_log(f"Log completo: {log_path}")
+
     def _on_error(self, exc: object) -> None:
         self.status_var.set("Erro")
         messagebox.showerror("Arruma Dir", str(exc))
@@ -1354,19 +1400,27 @@ class ArrumaDirApp(tk.Tk):
         for item in tree.get_children():
             tree.delete(item)
 
-    def _set_busy(self, message: str) -> None:
+    def _set_busy(self, message: str, *, indeterminate: bool = False, detail: str = "") -> None:
         self.busy = True
         self.status_var.set(message)
         self._append_log(message)
         self.progress_var.set(0.0)
-        self.progress_text_var.set("")
+        self.progress_text_var.set(detail)
         self.progress_frame.grid()
+        self.progress_bar.stop()
+        self.progress_bar.configure(mode="indeterminate" if indeterminate else "determinate")
+        self.progress_is_indeterminate = indeterminate
+        if indeterminate:
+            self.progress_bar.start(12)
         self.cancel_event.clear()
         self.stop_button.grid()
         self._set_action_buttons()
 
     def _finish_busy(self) -> None:
         self.busy = False
+        self.progress_bar.stop()
+        self.progress_bar.configure(mode="determinate")
+        self.progress_is_indeterminate = False
         self.progress_frame.grid_remove()
         self.progress_var.set(0.0)
         self.progress_text_var.set("")

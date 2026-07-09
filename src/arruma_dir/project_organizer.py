@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, TypedDict
 
 from arruma_dir.hardware import detect_hardware, normalize_performance_mode
 from arruma_dir.logging_utils import close_logger, create_operation_logger
@@ -180,6 +180,15 @@ class ExternalCandidate:
     score: int
     reasons: list[str] = field(default_factory=list)
     size: int | None = None
+
+
+class ProjectApplyResult(TypedDict):
+    moved: list[str]
+    copied: list[str]
+    skipped: list[str]
+    errors: list[str]
+    moved_pairs: list[tuple[str, str]]
+    copied_pairs: list[tuple[str, str]]
 
 
 @dataclass
@@ -947,10 +956,17 @@ def apply_report(
     yes: bool,
     cancel_event: threading.Event | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> dict[str, list[str]]:
+) -> ProjectApplyResult:
     root = Path(report.root)
     dry_run = not yes
-    result: dict[str, list[str]] = {"moved": [], "copied": [], "skipped": [], "errors": []}
+    result: ProjectApplyResult = {
+        "moved": [],
+        "copied": [],
+        "skipped": [],
+        "errors": [],
+        "moved_pairs": [],
+        "copied_pairs": [],
+    }
 
     total_items = 0
     if organize:
@@ -978,6 +994,7 @@ def apply_report(
                     continue
                 moved = execute_move(source, destination, dry_run=dry_run)
                 result["moved"].append(f"{moved[0]} -> {moved[1]}")
+                result["moved_pairs"].append(moved)
             except Exception as exc:  # noqa: BLE001
                 result["errors"].append(f"{source}: {exc}")
 
@@ -997,6 +1014,7 @@ def apply_report(
                     continue
                 moved = execute_move(source, destination, dry_run=dry_run)
                 result["moved"].append(f"{moved[0]} -> {moved[1]}")
+                result["moved_pairs"].append(moved)
             except Exception as exc:  # noqa: BLE001
                 result["errors"].append(f"{source}: {exc}")
 
@@ -1016,6 +1034,7 @@ def apply_report(
                     continue
                 copied = execute_copy(source, destination, dry_run=dry_run)
                 result["copied"].append(f"{copied[0]} -> {copied[1]}")
+                result["copied_pairs"].append(copied)
             except Exception as exc:  # noqa: BLE001
                 result["errors"].append(f"{source}: {exc}")
 

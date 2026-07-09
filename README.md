@@ -415,7 +415,7 @@ Rode localmente:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m unittest discover -s tests -v
+python -m pytest
 python -m compileall src tests scripts
 ```
 
@@ -444,8 +444,8 @@ dist\ArrumaDir\ArrumaDir.exe
 Rodar testes:
 
 ```powershell
-$env:PYTHONPATH = "src"
-python -m unittest discover -s tests -v
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
 Compilar arquivos Python:

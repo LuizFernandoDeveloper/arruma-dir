@@ -10,6 +10,7 @@ from arruma_dir.organizer import (
     clean_leaf_name,
     find_duplicate_files,
     move_duplicates_to_quarantine,
+    rollback_moves,
     scan_directory,
     strip_leading_number,
 )
@@ -76,6 +77,21 @@ class OrganizerTests(unittest.TestCase):
             self.assertFalse(result.errors)
             self.assertFalse(source.exists())
             self.assertTrue((root / "projetos" / "automacao_codigo" / "Python Scripts" / "bot.py").exists())
+
+    def test_rollback_moves_returns_files_to_original_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "PowerShell"
+            source.mkdir()
+            (source / "deploy.ps1").write_text("Write-Host ok", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            applied = apply_plan(scan.plan, root)
+            rolled_back = rollback_moves(applied.moved, root)
+
+            self.assertFalse(applied.errors)
+            self.assertFalse(rolled_back.errors)
+            self.assertTrue((source / "deploy.ps1").exists())
 
     def test_duplicate_quarantine_keeps_one_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

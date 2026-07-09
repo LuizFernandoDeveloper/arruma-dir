@@ -29,6 +29,9 @@ dependencies = []
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0"]
+dev = [
+  "pytest>=8.0",
+]
 
 [project.scripts]
 arruma-dir = "arruma_dir.cli:main"
@@ -36,3 +39,8 @@ arruma-projetos = "arruma_dir.project_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
