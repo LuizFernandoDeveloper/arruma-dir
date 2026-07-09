@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 from arruma_dir.gui_charts import LazyChartDeck
 from arruma_dir.hardware import detect_hardware, disk_usage_for, normalize_performance_mode
 
-from arruma_dir.logging_utils import close_logger, create_operation_logger
+from arruma_dir.logging_utils import close_logger, create_operation_logger, format_log_event
 from arruma_dir.organizer import (
     ApplyResult,
     ScanResult,
@@ -1283,44 +1283,59 @@ class ArrumaDirApp(tk.Tk):
     def _write_project_scan_log(self, report: ProjectReport) -> None:
         logger, log_path = create_operation_logger(report.root, mode=MODE_PROJECTS, operation="gui-project-scan")
         try:
-            logger.info("interface=gui modo=Projetos/CAD raiz=%s gerado_em=%s", report.root, report.generated_at)
+            logger.info(
+                format_log_event(
+                    "project_report.generated",
+                    interface="gui",
+                    mode="Projetos/CAD",
+                    root=report.root,
+                    generated_at=report.generated_at,
+                )
+            )
             for key, value in report.stats.items():
-                logger.info("stat.%s=%s", key, value)
+                logger.info(format_log_event("project_report.stat", name=key, value=value))
             for index, item in enumerate(report.organization, start=1):
                 logger.info(
-                    "organizacao[%04d] action=%s source=%s destination=%s reason=%s",
-                    index,
-                    item.action,
-                    item.source,
-                    item.destination,
-                    item.reason,
+                    format_log_event(
+                        "project.organization",
+                        index=index,
+                        action=item.action,
+                        source=item.source,
+                        destination=item.destination,
+                        reason=item.reason,
+                    )
                 )
             for index, item in enumerate(report.duplicates, start=1):
                 logger.info(
-                    "duplicata[%04d] size=%s sha256=%s source=%s keeper=%s destination=%s reason=%s",
-                    index,
-                    item.size,
-                    item.sha256,
-                    item.source,
-                    item.keeper,
-                    item.destination,
-                    item.reason,
+                    format_log_event(
+                        "project.duplicate",
+                        index=index,
+                        size=item.size,
+                        sha256=item.sha256,
+                        source=item.source,
+                        keeper=item.keeper,
+                        remove=item.source,
+                        destination=item.destination,
+                        reason=item.reason,
+                    )
                 )
             for index, item in enumerate(report.external_candidates, start=1):
                 logger.info(
-                    "externo[%04d] score=%s drive=%s source=%s destination=%s reasons=%s size=%s",
-                    index,
-                    item.score,
-                    item.drive,
-                    item.source,
-                    item.destination,
-                    "; ".join(item.reasons),
-                    item.size,
+                    format_log_event(
+                        "project.external_candidate",
+                        index=index,
+                        score=item.score,
+                        drive=item.drive,
+                        source=item.source,
+                        destination=item.destination,
+                        reasons=item.reasons,
+                        size=item.size,
+                    )
                 )
             for item in report.warnings:
-                logger.warning("%s", item)
+                logger.warning(format_log_event("project.warning", message=item))
             for item in report.errors:
-                logger.error("%s", item)
+                logger.error(format_log_event("project.error", message=item))
         finally:
             close_logger(logger)
         self._append_log(f"Log completo: {log_path}")
@@ -1347,20 +1362,24 @@ class ArrumaDirApp(tk.Tk):
         logger, log_path = create_operation_logger(self.active_root, mode=MODE_PROJECTS, operation="gui-project-apply")
         try:
             logger.info(
-                "interface=gui acao=Projetos movimentos=%s copias=%s ignorados=%s erros=%s",
-                len(result.get("moved", [])),
-                len(result.get("copied", [])),
-                len(result.get("skipped", [])),
-                len(result.get("errors", [])),
+                format_log_event(
+                    "project_apply.summary",
+                    interface="gui",
+                    action="Projetos",
+                    moved=len(result.get("moved", [])),
+                    copied=len(result.get("copied", [])),
+                    skipped=len(result.get("skipped", [])),
+                    errors=len(result.get("errors", [])),
+                )
             )
             for item in result.get("moved", []):
-                logger.info("move %s", item)
+                logger.info(format_log_event("project_apply.item", kind="moved", value=item))
             for item in result.get("copied", []):
-                logger.info("copy %s", item)
+                logger.info(format_log_event("project_apply.item", kind="copied", value=item))
             for item in result.get("skipped", []):
-                logger.warning("%s", item)
+                logger.warning(format_log_event("project_apply.skipped", message=item))
             for item in result.get("errors", []):
-                logger.error("%s", item)
+                logger.error(format_log_event("project_apply.error", message=item))
         finally:
             close_logger(logger)
         self._append_log(f"Log completo: {log_path}")

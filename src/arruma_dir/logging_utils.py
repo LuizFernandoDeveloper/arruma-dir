@@ -1,13 +1,59 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 import sys
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 DOCUMENTS_STATE_DIR = "_arruma_dir"
 PROJECTS_STATE_DIR = "_arruma_projetos"
+LOG_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+BARE_LOG_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:\\-]+$")
+
+
+def format_log_value(value: object) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+
+    if isinstance(value, Path):
+        text = str(value)
+    elif isinstance(value, Mapping):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        text = "; ".join(str(item) for item in value) or "-"
+    else:
+        text = str(value)
+
+    text = " ".join(text.split()) if any(char in text for char in "\r\n\t") else text
+    if not text:
+        return '""'
+    if text == "-" or BARE_LOG_VALUE_RE.fullmatch(text):
+        return text
+    return json.dumps(text, ensure_ascii=False)
+
+
+def format_log_fields(**fields: object) -> str:
+    parts: list[str] = []
+    for key, value in fields.items():
+        if not LOG_KEY_RE.fullmatch(key):
+            raise ValueError(f"Nome de campo de log invalido: {key!r}")
+        parts.append(f"{key}={format_log_value(value)}")
+    return " ".join(parts)
+
+
+def format_log_event(event: str, **fields: Any) -> str:
+    if not event:
+        raise ValueError("Evento de log nao pode ser vazio.")
+    return format_log_fields(event=event, **fields)
 
 
 def timestamp_for_file() -> str:

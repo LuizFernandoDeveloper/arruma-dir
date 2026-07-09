@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from arruma_dir.hardware import detect_hardware, normalize_performance_mode
-from arruma_dir.logging_utils import close_logger, create_operation_logger
+from arruma_dir.logging_utils import close_logger, create_operation_logger, format_log_event
 from arruma_dir.project_organizer import (
     DEFAULT_ROOT,
     REPORTS_DIR,
@@ -72,8 +72,7 @@ def make_project_logger(args: argparse.Namespace, root: str | Path, operation: s
     if getattr(args, "no_log_file", False):
         return None, None
     logger, log_path = create_operation_logger(root, mode="projects", operation=operation, console=getattr(args, "verbose", False))
-    logger.info("comando=%s", operation)
-    logger.info("raiz=%s", root)
+    logger.info(format_log_event("project_cli.command", command=operation, root=root))
     return logger, log_path
 
 
@@ -87,63 +86,72 @@ def resolve_workers(args: argparse.Namespace) -> tuple[int, str]:
 def log_project_report(logger: logging.Logger | None, report: ProjectReport) -> None:
     if logger is None:
         return
-    logger.info("gerado_em=%s", report.generated_at)
+    logger.info(format_log_event("project_report.generated", root=report.root, generated_at=report.generated_at))
     for key, value in report.stats.items():
-        logger.info("stat.%s=%s", key, value)
+        logger.info(format_log_event("project_report.stat", name=key, value=value))
     for index, item in enumerate(report.organization, start=1):
         logger.info(
-            "organizacao[%04d] action=%s source=%s destination=%s reason=%s",
-            index,
-            item.action,
-            item.source,
-            item.destination,
-            item.reason,
+            format_log_event(
+                "project.organization",
+                index=index,
+                action=item.action,
+                source=item.source,
+                destination=item.destination,
+                reason=item.reason,
+            )
         )
     for index, item in enumerate(report.duplicates, start=1):
         logger.info(
-            "duplicata[%04d] size=%s sha256=%s source=%s keeper=%s destination=%s reason=%s",
-            index,
-            item.size,
-            item.sha256,
-            item.source,
-            item.keeper,
-            item.destination,
-            item.reason,
+            format_log_event(
+                "project.duplicate",
+                index=index,
+                size=item.size,
+                sha256=item.sha256,
+                source=item.source,
+                keeper=item.keeper,
+                remove=item.source,
+                destination=item.destination,
+                reason=item.reason,
+            )
         )
     for index, item in enumerate(report.external_candidates, start=1):
         logger.info(
-            "externo[%04d] score=%s drive=%s source=%s destination=%s reasons=%s size=%s",
-            index,
-            item.score,
-            item.drive,
-            item.source,
-            item.destination,
-            "; ".join(item.reasons),
-            item.size,
+            format_log_event(
+                "project.external_candidate",
+                index=index,
+                score=item.score,
+                drive=item.drive,
+                source=item.source,
+                destination=item.destination,
+                reasons=item.reasons,
+                size=item.size,
+            )
         )
     for item in report.warnings:
-        logger.warning("%s", item)
+        logger.warning(format_log_event("project.warning", message=item))
     for item in report.errors:
-        logger.error("%s", item)
+        logger.error(format_log_event("project.error", message=item))
 
 
 def log_project_apply(logger: logging.Logger | None, result: ProjectApplyResult) -> None:
     if logger is None:
         return
     logger.info(
-        "movidos=%s copiados=%s ignorados=%s erros=%s",
-        len(result["moved"]),
-        len(result["copied"]),
-        len(result["skipped"]),
-        len(result["errors"]),
+        format_log_event(
+            "project_apply.summary",
+            moved=len(result["moved"]),
+            copied=len(result["copied"]),
+            skipped=len(result["skipped"]),
+            errors=len(result["errors"]),
+        )
     )
     for key in ("moved", "copied"):
         for item in result[key]:
-            logger.info("%s %s", key, item)
+            logger.info(format_log_event("project_apply.item", kind=key, value=item))
     for item in result["skipped"]:
-        logger.warning("%s", item)
+        logger.warning(format_log_event("project_apply.skipped", message=item))
     for item in result["errors"]:
-        logger.error("%s", item)
+        logger.error(format_log_event("project_apply.error", message=item))
 
 
 def print_project_report_details(report: ProjectReport) -> None:
@@ -181,17 +189,19 @@ def main(argv: list[str] | None = None) -> int:
         logger, log_path = make_project_logger(args, root, "scan")
         workers, hardware_summary = resolve_workers(args)
         if logger:
-            logger.info("hardware_profile=%s", hardware_summary)
+            logger.info(format_log_event("project_cli.hardware", profile=hardware_summary))
             logger.info(
-                "opcoes external=%s drives=%s include_fixed_external=%s min_external_score=%s max_files=%s max_hash_size_mb=%s no_hash=%s include_cad_duplicates=%s",
-                args.external,
-                ",".join(args.external_drive),
-                args.include_fixed_external,
-                args.min_external_score,
-                args.max_files,
-                args.max_hash_size_mb,
-                args.no_hash,
-                args.include_cad_duplicates,
+                format_log_event(
+                    "project_cli.scan_options",
+                    external=args.external,
+                    drives=args.external_drive,
+                    include_fixed_external=args.include_fixed_external,
+                    min_external_score=args.min_external_score,
+                    max_files=args.max_files,
+                    max_hash_size_mb=args.max_hash_size_mb,
+                    no_hash=args.no_hash,
+                    include_cad_duplicates=args.include_cad_duplicates,
+                )
             )
         report = scan_projects(
             root,
@@ -228,13 +238,15 @@ def main(argv: list[str] | None = None) -> int:
         logger, log_path = make_project_logger(args, report.root, "apply")
         if logger:
             logger.info(
-                "report=%s organize=%s duplicates=%s import_external=%s yes=%s dry_run=%s",
-                args.report,
-                args.organize,
-                args.duplicates,
-                args.import_external,
-                args.yes,
-                not args.yes,
+                format_log_event(
+                    "project_cli.apply_options",
+                    report=args.report,
+                    organize=args.organize,
+                    duplicates=args.duplicates,
+                    import_external=args.import_external,
+                    yes=args.yes,
+                    dry_run=not args.yes,
+                )
             )
         result = apply_report(
             report,

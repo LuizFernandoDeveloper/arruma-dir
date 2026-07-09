@@ -432,6 +432,7 @@ def canonical_roots(root: Path) -> dict[str, Path]:
         "meus": base / "Meus_Projetos",
         "referencias": base / "Referencias",
         "entrada": root / "organizar",
+        "entrada_revisar": root / "entrada" / "revisar" / "organizar",
     }
 
 
@@ -539,10 +540,17 @@ def classify_for_root(path: Path, root: Path) -> tuple[Path | None, str]:
     if is_inside_any(path, protected_roots):
         return None, "ja esta em area canonica"
 
+    if path.is_dir() and name_text in {"ramtech", "macrotec"}:
+        return roots["ramtech"], "fundir pasta Ramtech/Macrotec na area canonica"
+
+    if path.is_dir() and name_text in {"opcao", "opcao industrial"}:
+        return roots["opcao"], "fundir pasta Opcao na area canonica"
+
+    opcao_target, opcao_reason = classify_opcao(path, root)
+    if opcao_target is not None:
+        return opcao_target, opcao_reason
+
     if path == roots["entrada"] or is_inside_any(path, [roots["entrada"]]):
-        opcao_target, opcao_reason = classify_opcao(path, root)
-        if opcao_target is not None:
-            return opcao_target, opcao_reason
         if "opcao" in text or "opcao industrial" in text:
             if "cabo" in text:
                 return roots["opcao_cabos"] / path.name, "material Opcao: cabos"
@@ -564,37 +572,65 @@ def classify_for_root(path: Path, root: Path) -> tuple[Path | None, str]:
         if any(term in text for term in ("protec", "simulation instructor", "maquinas", "solidworks")):
             return roots["referencias"] / "Mecanica" / path.name, "referencia tecnica mecanica"
 
+    if "padrao ramtech" in text:
+        return roots["ramtech_padroes"] / path.name, "padrao Ramtech"
+
+    if "padrao de pastas" in text:
+        return roots["ramtech_pastas"] / path.name, "padrao de pastas Ramtech"
+
+    if "biblioteca" in text and ("ramtech" in text or "macrotec" in text):
+        return roots["ramtech_biblioteca"] / path.name, "biblioteca tecnica Ramtech/Macrotec"
+
+    if "fabricacao" in text and ("ramtech" in text or "macrotec" in text):
+        return roots["ramtech_fabricacao"] / path.name, "fabricacao Ramtech/Macrotec"
+
     if "modelo" in name_text and ("ramtech" in text or "macrotec" in text):
         return roots["ramtech_modelos"] / path.name, "modelo Ramtech/Macrotec"
 
-    if PROJECT_CODE_RE.search(path.name) and ("ramtech" in text or "macrotec" in text):
+    if PROJECT_CODE_RE.search(path.name):
         return roots["ramtech_projetos"] / path.name, "codigo de projeto Ramtech/Macrotec"
 
+    if "ramtech" in text or "macrotec" in text:
+        return roots["ramtech"] / "_entrada_revisar" / path.name, "material Ramtech/Macrotec para revisar"
+
     return None, "sem regra segura"
+
+
+def project_scan_roots(root: Path, *, cancel_event: threading.Event | None = None) -> list[Path]:
+    roots = canonical_roots(root)
+    candidates = [root, roots["entrada"], roots["entrada_revisar"], roots["base"]]
+    for staging_root in (roots["entrada"], roots["entrada_revisar"]):
+        if not staging_root.exists():
+            continue
+        for child in sorted(staging_root.iterdir(), key=lambda item: item.name.lower()):
+            if is_cancelled(cancel_event):
+                return candidates
+            if child.is_dir() and canonical_text(child.name) in {"4 projeto mecanico", "projeto mecanico"}:
+                candidates.append(child)
+
+    scan_roots: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        scan_roots.append(candidate)
+    return scan_roots
 
 
 def build_organization_plan(root: Path, *, cancel_event: threading.Event | None = None) -> list[MoveOperation]:
     operations: list[MoveOperation] = []
     roots = canonical_roots(root)
-    scan_roots = [root, roots["entrada"]]
-    if roots["entrada"].exists():
-        for child in roots["entrada"].iterdir():
-            if is_cancelled(cancel_event):
-                return operations
-            if child.is_dir() and canonical_text(child.name) in {"4 projeto mecanico", "projeto mecanico"}:
-                scan_roots.append(child)
-    seen: set[Path] = set()
+    scan_roots = project_scan_roots(root, cancel_event=cancel_event)
 
     for scan_root in scan_roots:
         if not scan_root.exists():
             continue
-        if scan_root in seen:
-            continue
-        seen.add(scan_root)
         for entry in sorted(scan_root.iterdir(), key=lambda item: item.name.lower()):
             if is_cancelled(cancel_event):
                 return operations
-            if entry.name.lower() in {"projetos", STATE_DIR.lower()}:
+            if entry.name.lower() in {"entrada", "organizar", "projetos", STATE_DIR.lower()}:
                 continue
             if is_noise_file(entry):
                 continue
@@ -602,7 +638,11 @@ def build_organization_plan(root: Path, *, cancel_event: threading.Event | None 
             if target is None:
                 continue
             ensure_inside(root, target)
-            operations.append(MoveOperation("move", str(entry), str(target), reason))
+            action = "merge_dir" if entry.is_dir() and target.resolve(strict=False) in {
+                roots["ramtech"].resolve(strict=False),
+                roots["opcao"].resolve(strict=False),
+            } else "move"
+            operations.append(MoveOperation(action, str(entry), str(target), reason))
     return operations
 
 
@@ -938,6 +978,41 @@ def execute_move(source: Path, destination: Path, *, dry_run: bool) -> tuple[str
     return (str(source), str(destination))
 
 
+def execute_merge_dir(source: Path, destination: Path, *, dry_run: bool) -> list[tuple[str, str]]:
+    if not source.is_dir():
+        raise NotADirectoryError(source)
+
+    source_resolved = source.resolve(strict=False)
+    destination_resolved = destination.resolve(strict=False)
+    if source_resolved == destination_resolved:
+        return []
+    try:
+        destination_resolved.relative_to(source_resolved)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"Destino dentro da origem: {destination}")
+
+    moved: list[tuple[str, str]] = []
+    if not dry_run:
+        destination.mkdir(parents=True, exist_ok=True)
+
+    for child in sorted(source.iterdir(), key=lambda item: item.name.lower()):
+        target = unique_path(destination / child.name)
+        moved.append((str(child), str(target)))
+        if dry_run:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(child), str(target))
+
+    if not dry_run:
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+    return moved
+
+
 def execute_copy(source: Path, destination: Path, *, dry_run: bool) -> tuple[str, str]:
     if dry_run:
         return (str(source), str(destination))
@@ -992,9 +1067,17 @@ def apply_report(
                 if not source.exists():
                     result["skipped"].append(f"nao existe: {source}")
                     continue
-                moved = execute_move(source, destination, dry_run=dry_run)
-                result["moved"].append(f"{moved[0]} -> {moved[1]}")
-                result["moved_pairs"].append(moved)
+                if item.action == "merge_dir":
+                    moved_items = execute_merge_dir(source, destination, dry_run=dry_run)
+                    for moved in moved_items:
+                        result["moved"].append(f"{moved[0]} -> {moved[1]}")
+                    result["moved_pairs"].extend(moved_items)
+                elif item.action == "move":
+                    moved = execute_move(source, destination, dry_run=dry_run)
+                    result["moved"].append(f"{moved[0]} -> {moved[1]}")
+                    result["moved_pairs"].append(moved)
+                else:
+                    result["skipped"].append(f"acao desconhecida: {item.action} em {source}")
             except Exception as exc:  # noqa: BLE001
                 result["errors"].append(f"{source}: {exc}")
 
