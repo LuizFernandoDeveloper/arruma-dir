@@ -7,6 +7,7 @@ from pathlib import Path
 from arruma_dir.organizer import (
     apply_plan,
     choose_duplicate_keeper,
+    classify_entry,
     clean_leaf_name,
     find_duplicate_files,
     move_duplicates_to_quarantine,
@@ -63,6 +64,103 @@ class OrganizerTests(unittest.TestCase):
             self.assertEqual(scan.directory_summary["docs"], 2)
             self.assertEqual(scan.directory_summary["imagens"], 1)
             self.assertEqual(scan.directory_summary["(raiz)"], 1)
+
+    def test_pdf_padrao_empresa_is_separated_from_normal_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normal = root / "manual.pdf"
+            standard = root / "PO-05 - Politica de Industrializacao R01.pdf"
+            normal.write_text("pdf comum", encoding="utf-8")
+            standard.write_text("norma empresa", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            standard_topic, reason = classify_entry(standard)
+
+            self.assertEqual(scan.file_summary[".pdf"], 1)
+            self.assertEqual(scan.file_summary[".pdf padrão empresa"], 1)
+            self.assertEqual(standard_topic.directory, "areas/empresas_financeiro/padroes")
+            self.assertIn("pdf padrao de empresa", reason)
+
+    def test_pdf_livro_is_separated_from_normal_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            books = root / "1 - Para Ler" / "Base de Dados Para Ler"
+            books.mkdir(parents=True)
+            normal = root / "boleto.pdf"
+            book = books / "Codigo Limpo - Completo PT.pdf"
+            normal.write_text("pdf comum", encoding="utf-8")
+            book.write_text("livro", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            book_topic, reason = classify_entry(book)
+
+            self.assertEqual(scan.file_summary[".pdf"], 1)
+            self.assertEqual(scan.file_summary[".pdf livro"], 1)
+            self.assertEqual(book_topic.directory, "recursos/leitura")
+            self.assertIn("pdf livro", reason)
+
+    def test_pdf_padrao_empresa_has_priority_over_book_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            standard = root / "Biblioteca" / "PADRAO RAMTECH - Manual Qualidade.pdf"
+            standard.parent.mkdir()
+            standard.write_text("padrao", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            standard_topic, reason = classify_entry(standard)
+
+            self.assertEqual(scan.file_summary[".pdf padrão empresa"], 1)
+            self.assertNotIn(".pdf livro", scan.file_summary)
+            self.assertEqual(standard_topic.directory, "areas/empresas_financeiro/padroes")
+            self.assertIn("pdf padrao de empresa", reason)
+
+    def test_document_cad_file_is_protected_unless_option_is_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cad_file = root / "base maquina.step"
+            cad_file.write_bytes(b"step model")
+
+            protected = scan_directory(root, include_duplicates=False)
+            included = scan_directory(root, include_duplicates=False, include_cad=True)
+
+            self.assertEqual(protected.plan, [])
+            self.assertEqual(protected.file_summary[".step CAD"], 1)
+            self.assertTrue(any("CAD em Documentos protegido" in item for item in protected.skipped))
+            self.assertEqual(len(included.plan), 1)
+            self.assertEqual(Path(included.plan[0].destination).parts[-3:-1], ("recursos", "engenharia"))
+            self.assertEqual(included.plan[0].reason, "extensao: .step")
+
+    def test_document_cad_folder_is_protected_unless_option_is_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cad_folder = root / "Cliente X"
+            cad_folder.mkdir()
+            (cad_folder / "conjunto.SLDASM").write_bytes(b"assembly")
+
+            protected = scan_directory(root, include_duplicates=False)
+            included = scan_directory(root, include_duplicates=False, include_cad=True)
+
+            self.assertEqual(protected.plan, [])
+            self.assertTrue(any("CAD em Documentos protegido" in item for item in protected.skipped))
+            self.assertEqual(len(included.plan), 1)
+            self.assertEqual(included.plan[0].category, "recursos/engenharia")
+            self.assertEqual(included.plan[0].reason, "pasta com arquivos CAD")
+
+    def test_document_cad_duplicates_only_enter_when_option_is_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "painel.dwg").write_bytes(b"same cad")
+            (root / "painel - Copia.dwg").write_bytes(b"same cad")
+
+            protected = find_duplicate_files(root, include_cad=False)
+            included = find_duplicate_files(root, include_cad=True)
+
+            self.assertEqual(protected.duplicates, [])
+            self.assertEqual(protected.file_summary[".dwg CAD"], 2)
+            self.assertTrue(any("arquivo(s) CAD" in item for item in protected.skipped))
+            exact = [group for group in included.duplicates if group.kind == "exact"]
+            self.assertEqual(len(exact), 1)
+            self.assertEqual(len(exact[0].files), 2)
 
     def test_apply_plan_moves_without_deleting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

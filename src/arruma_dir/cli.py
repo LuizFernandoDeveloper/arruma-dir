@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("path", nargs="?", default=str(default_documents_path()))
     scan.add_argument("--compat-names", action="store_true", help="usa nomes sem acentos e sem espacos")
     scan.add_argument("--no-duplicates", action="store_true", help="nao calcula arquivos repetidos")
+    scan.add_argument(
+        "--include-cad",
+        action="store_true",
+        help="inclui arquivos e pastas CAD de Documentos na organizacao e nas duplicatas",
+    )
     scan.add_argument("--duplicate-time-limit", type=float, default=90.0, help="segundos para busca de repetidos")
     scan.add_argument(
         "--duplicate-max-size-mb",
@@ -85,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="busca repetidos sem limite de tempo/tamanho, incluindo arquivos grandes",
     )
     dedupe.add_argument("--all-exact", action="store_true", help="tambem move exatos sem marcador claro de copia")
+    dedupe.add_argument(
+        "--include-cad",
+        action="store_true",
+        help="inclui arquivos CAD de Documentos na busca/movimentacao de duplicatas",
+    )
     add_log_args(dedupe)
     add_performance_args(dedupe)
 
@@ -175,9 +185,10 @@ def command_scan(args: argparse.Namespace) -> int:
     logger, log_path = make_logger(args, args.path, "scan")
     if logger:
         logger.info(
-            "opcoes compat_names=%s include_duplicates=%s full_duplicates=%s duplicate_time_limit=%s duplicate_max_size_mb=%s",
+            "opcoes compat_names=%s include_duplicates=%s include_cad=%s full_duplicates=%s duplicate_time_limit=%s duplicate_max_size_mb=%s",
             args.compat_names,
             not args.no_duplicates,
+            args.include_cad,
             args.full_duplicates,
             duplicate_time_limit,
             duplicate_max_size_mb,
@@ -187,6 +198,7 @@ def command_scan(args: argparse.Namespace) -> int:
         args.path,
         compat_names=args.compat_names,
         include_duplicates=not args.no_duplicates,
+        include_cad=args.include_cad,
         duplicate_time_limit=duplicate_time_limit,
         duplicate_max_size_mb=duplicate_max_size_mb,
         hash_workers=workers,
@@ -251,13 +263,14 @@ def command_dedupe(args: argparse.Namespace) -> int:
     logger, log_path = make_logger(args, args.path, "dedupe")
     if logger:
         logger.info(
-            "opcoes yes=%s dry_run=%s full_duplicates=%s duplicate_time_limit=%s duplicate_max_size_mb=%s all_exact=%s",
+            "opcoes yes=%s dry_run=%s full_duplicates=%s duplicate_time_limit=%s duplicate_max_size_mb=%s all_exact=%s include_cad=%s",
             args.yes,
             not args.yes,
             args.full_duplicates,
             duplicate_time_limit,
             duplicate_max_size_mb,
             args.all_exact,
+            args.include_cad,
         )
         logger.info("hardware=%s workers=%s", hardware_summary, workers)
     result = move_duplicates_to_quarantine(
@@ -267,6 +280,7 @@ def command_dedupe(args: argparse.Namespace) -> int:
         duplicate_max_size_mb=duplicate_max_size_mb,
         hash_workers=workers,
         include_manual_exact=args.all_exact,
+        include_cad=args.include_cad,
     )
     log_apply(logger, result)
     mode = "PREVIA" if not args.yes else "APLICADO"

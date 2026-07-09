@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from arruma_dir.gui_charts import build_directory_bars, build_pie_slices
+from arruma_dir.gui_charts import build_directory_bars, build_pie_slices, build_ranked_bars, percent_text
 
 
 def test_gui_charts_import_does_not_load_matplotlib() -> None:
@@ -48,6 +48,32 @@ def test_build_pie_slices_groups_small_or_excessive_types(
     slices = build_pie_slices(summary_data, min_fraction=0.05, max_named_slices=2)
 
     assert [(item.label, item.count) for item in slices] == expected
+
+
+def test_build_ranked_bars_keeps_labels_clean_for_horizontal_chart() -> None:
+    bars = build_ranked_bars(
+        {
+            ".pdf": 128,
+            ".pdf livro": 40,
+            ".pdf padrão empresa": 12,
+            ".tmp": 1,
+            ".bak": 1,
+        },
+        min_fraction=0.05,
+        max_named_bars=3,
+    )
+
+    assert [(item.label, item.count) for item in bars] == [
+        (".pdf", 128),
+        (".pdf livro", 40),
+        (".pdf padrão empresa", 12),
+        ("Outros (2 tipos)", 2),
+    ]
+
+
+def test_percent_text_handles_empty_and_normal_totals() -> None:
+    assert percent_text(0, 0) == "0%"
+    assert percent_text(25, 100) == "25.0%"
 
 
 def test_build_directory_bars_keeps_chart_draw_order_and_groups_tail() -> None:

@@ -119,6 +119,7 @@ Na tela principal voce escolhe:
 - modo `Projetos / CAD`;
 - pasta raiz que sera analisada;
 - busca de duplicatas;
+- no modo Documentos/PARA, inclusao de arquivos e pastas CAD na organizacao;
 - no modo Projetos/CAD, varredura de HDs externos;
 - no modo Projetos/CAD, inclusao ou nao de duplicatas CAD no relatorio.
 
@@ -183,6 +184,12 @@ Usar nomes mais compativeis com scripts e automacoes:
 
 ```powershell
 arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --compat-names --json plano.arruma-plan.json
+```
+
+Incluir CAD encontrado em Documentos na previa e nas duplicatas:
+
+```powershell
+arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --include-cad --json plano.arruma-plan.json
 ```
 
 ## Comandos principais
@@ -325,6 +332,8 @@ Codigos como `OP-...`, pastas numericas e revisoes `REV00` ajudam na classificac
 
 Projetos CAD nao sao tratados como arquivos comuns.
 
+No modo `Documentos / PARA`, arquivos e pastas CAD aparecem no resumo, mas ficam protegidos por padrao. Marque `Incluir/organizar CAD` na interface ou use `--include-cad` no terminal para colocar esses itens no plano de organizacao e na busca de duplicatas.
+
 Por padrao, o sistema preserva arvores e metadados de:
 
 - SolidWorks: `.sldprt`, `.sldasm`, `.slddrw`, `.slddrt`, `.prtdot`, `.asmdot`, `.drwdot`
@@ -408,7 +417,7 @@ arruma-dir scan "C:\Users\luizf\OneDrive\Documentos" --verbose
 
 ### Arquivo CAD nao entrou como duplicata
 
-Isso e esperado. O modo Projetos/CAD protege arquivos internos de SolidWorks, Electrical, EPLAN e AutoCAD por padrao.
+Isso e esperado. O modo Documentos/PARA protege CAD ate voce marcar `Incluir/organizar CAD` ou usar `--include-cad`. O modo Projetos/CAD tambem protege arquivos internos de SolidWorks, Electrical, EPLAN e AutoCAD por padrao.
 
 Para apenas revisar no relatorio:
 

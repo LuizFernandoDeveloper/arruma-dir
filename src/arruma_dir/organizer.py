@@ -40,6 +40,33 @@ SKIP_NAMES = {
 
 GENERATED_DIRS = {"_arruma_dir", "_duplicados"}
 PRODUCTIVITY_DIRS = {"entrada", "projetos", "areas", "recursos", "arquivo"}
+DOCUMENT_CAD_EXTENSIONS = {
+    ".dwg",
+    ".dxf",
+    ".dwt",
+    ".step",
+    ".stp",
+    ".igs",
+    ".iges",
+    ".sat",
+    ".x_t",
+    ".x_b",
+    ".sldprt",
+    ".sldasm",
+    ".slddrw",
+    ".sldlfp",
+    ".sldblk",
+    ".sldmat",
+    ".eprt",
+    ".easm",
+    ".edrw",
+    ".catpart",
+    ".catproduct",
+    ".ipt",
+    ".iam",
+    ".prt",
+    ".tewzip",
+}
 PROTECTED_APP_DIR_NAMES = {
     "acade 2026",
     "anaconda projects",
@@ -242,6 +269,25 @@ DEFAULT_TOPICS: tuple[Topic, ...] = (
             "vaga",
             "emprego",
             "profissional",
+        ),
+    ),
+    Topic(
+        "padroes_empresas",
+        "Padroes de empresas",
+        "areas/empresas_financeiro/padroes",
+        (
+            "padrao empresa",
+            "padrao empresas",
+            "padrao ramtech",
+            "padrao macrotec",
+            "padrao opcao",
+            "padrao de pastas",
+            "procedimento empresa",
+            "politica empresa",
+            "norma empresa",
+            "manual qualidade",
+            "instrucao trabalho",
+            "documentacao producao",
         ),
     ),
     Topic(
@@ -529,14 +575,151 @@ def is_protected_app_dir(path: Path) -> bool:
     return path.is_dir() and is_protected_app_dir_name(path.name)
 
 
+def is_document_cad_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in DOCUMENT_CAD_EXTENSIONS
+
+
+def directory_has_document_cad(path: Path, *, max_depth: int = 4, max_files: int = 500) -> bool:
+    if not path.is_dir():
+        return False
+
+    root_depth = len(path.parts)
+    seen_files = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        current = Path(dirpath)
+        depth = len(current.parts) - root_depth
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if depth < max_depth
+            and not should_skip_name(dirname)
+            and not dirname.startswith(".")
+            and not is_protected_app_dir_name(dirname)
+            and dirname.lower() not in SKIP_WALK_DIRS
+        ]
+        for filename in filenames:
+            if should_skip_name(filename):
+                continue
+            seen_files += 1
+            if Path(filename).suffix.lower() in DOCUMENT_CAD_EXTENSIONS:
+                return True
+            if seen_files >= max_files:
+                return False
+    return False
+
+
+def is_document_cad_entry(path: Path) -> bool:
+    return is_document_cad_file(path) or directory_has_document_cad(path)
+
+
 def looks_like_projects_cad_root(path: Path) -> bool:
     return (path / "organizar").is_dir() and (path / "projetos").is_dir()
+
+
+def topic_by_id(topic_id: str) -> Topic:
+    for topic in DEFAULT_TOPICS:
+        if topic.id == topic_id:
+            return topic
+    raise KeyError(topic_id)
+
+
+def company_standard_pdf_reason(path: Path) -> str | None:
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        return None
+
+    text = canonical_text(" ".join(path.parts))
+    name_text = canonical_text(path.name)
+    if any(marker in text for marker in ("padrao ramtech", "padrao macrotec", "padrao opcao", "padrao de pastas")):
+        return "pdf padrao de empresa: pasta/nome de padrao"
+
+    if re.match(r"^(it|po|fx)\s+\d", name_text):
+        return "pdf padrao de empresa: codigo normativo"
+
+    standard_terms = (
+        "padrao",
+        "procedimento",
+        "politica",
+        "norma",
+        "instrucao trabalho",
+        "manual qualidade",
+        "documentacao producao",
+        "template",
+        "modelo",
+    )
+    company_terms = (
+        "empresa",
+        "empresas",
+        "ramtech",
+        "macrotec",
+        "opcao",
+        "qualidade",
+        "industrializacao",
+        "fabricacao",
+    )
+    if any(term in text for term in standard_terms) and any(term in text for term in company_terms):
+        return "pdf padrao de empresa: norma/procedimento corporativo"
+
+    return None
+
+
+def book_pdf_reason(path: Path) -> str | None:
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        return None
+
+    text = canonical_text(" ".join(path.parts))
+    name_text = canonical_text(path.name)
+    if any(
+        marker in text
+        for marker in (
+            "para ler",
+            "base de dados para ler",
+            "biblioteca",
+            "livro",
+            "livros",
+            "ebook",
+            "e book",
+            "kindle",
+            "book",
+            "books",
+            "anna archive",
+            "annas archive",
+        )
+    ):
+        return "pdf livro/ebook: pasta ou nome de biblioteca/leitura"
+
+    if re.search(r"\b(?:isbn|978\d{10}|979\d{10})\b", name_text):
+        return "pdf livro/ebook: ISBN no nome"
+
+    if re.search(r"\b(?:robert c martin|martin fowler|scott millett|vaughn vernon)\b", name_text):
+        return "pdf livro/ebook: autor tecnico conhecido"
+
+    if re.search(r"\b(?:clean code|codigo limpo|arquitetura limpa|domain driven|ddd|design patterns)\b", name_text):
+        return "pdf livro/ebook: titulo tecnico de livro"
+
+    return None
+
+
+def file_summary_key(path: Path) -> str:
+    if company_standard_pdf_reason(path):
+        return ".pdf padrão empresa"
+    if book_pdf_reason(path):
+        return ".pdf livro"
+    if is_document_cad_file(path):
+        return f"{path.suffix.lower()} CAD"
+    return path.suffix.lower() or "(sem extensão)"
 
 
 def classify_entry(path: Path) -> tuple[Topic, str]:
     name = path.stem if path.is_file() else path.name
     text = canonical_text(strip_leading_number(name))
     extension = path.suffix.lower() if path.is_file() else ""
+
+    standard_reason = company_standard_pdf_reason(path)
+    if standard_reason:
+        return topic_by_id("padroes_empresas"), standard_reason
+    book_reason = book_pdf_reason(path)
+    if book_reason:
+        return topic_by_id("leitura"), book_reason
 
     best_topic: Topic | None = None
     best_score = 0
@@ -557,6 +740,9 @@ def classify_entry(path: Path) -> tuple[Topic, str]:
 
     if best_topic is not None:
         return best_topic, f"palavra-chave: {best_keyword}"
+
+    if path.is_dir() and directory_has_document_cad(path):
+        return topic_by_id("engenharia_referencia"), "pasta com arquivos CAD"
 
     if extension:
         for topic in DEFAULT_TOPICS:
@@ -602,7 +788,7 @@ def unique_path(target: Path) -> Path:
 
 
 def summarize_file(path: Path, root: Path, file_summary: dict[str, int], directory_summary: dict[str, int]) -> None:
-    ext = path.suffix.lower() or "(sem extensão)"
+    ext = file_summary_key(path)
     file_summary[ext] = file_summary.get(ext, 0) + 1
     try:
         relative = path.relative_to(root)
@@ -618,6 +804,7 @@ def scan_directory(
     *,
     compat_names: bool = False,
     include_duplicates: bool = True,
+    include_cad: bool = False,
     duplicate_time_limit: float | None = 90.0,
     duplicate_max_size_mb: int | None = 512,
     hash_workers: int = 1,
@@ -656,6 +843,9 @@ def scan_directory(
             continue
         if is_protected_app_dir(entry):
             result.skipped.append(f"pasta gerenciada por programa: {entry}")
+            continue
+        if not include_cad and is_document_cad_entry(entry):
+            result.skipped.append(f"CAD em Documentos protegido: {entry}; marque Incluir/organizar CAD para mover")
             continue
 
         try:
@@ -696,6 +886,7 @@ def scan_directory(
             max_file_size_mb=duplicate_max_size_mb,
             workers=hash_workers,
             cancel_event=cancel_event,
+            include_cad=include_cad,
         )
         result.duplicates = duplicate_result.duplicates
         result.skipped.extend(duplicate_result.skipped)
@@ -706,11 +897,19 @@ def scan_directory(
         if is_cancelled(cancel_event):
             result.skipped.append("operacao cancelada pelo usuario antes do resumo de arquivos")
         else:
+            skipped_cad = 0
             for path in iter_files(root_path):
                 if is_cancelled(cancel_event):
                     result.skipped.append("operacao cancelada durante o resumo de arquivos")
                     break
                 summarize_file(path, root_path, result.file_summary, result.directory_summary)
+                if not include_cad and is_document_cad_file(path):
+                    skipped_cad += 1
+            if skipped_cad:
+                result.skipped.append(
+                    f"resumo: {skipped_cad} arquivo(s) CAD em Documentos ficaram protegidos; "
+                    "marque Incluir/organizar CAD para organizar e comparar"
+                )
 
     return result
 
@@ -957,6 +1156,7 @@ def find_duplicate_files(
     time_limit_seconds: float | None = None,
     workers: int = 1,
     cancel_event: threading.Event | None = None,
+    include_cad: bool = False,
 ) -> ScanResult:
     root_path = Path(root).expanduser()
     result = ScanResult(root=str(root_path), generated_at=utc_now())
@@ -966,6 +1166,7 @@ def find_duplicate_files(
     by_size: dict[int, list[Path]] = {}
     hash_by_path: dict[str, str] = {}
     skipped_large = 0
+    skipped_cad = 0
 
     def expired() -> bool:
         return time_limit_seconds is not None and (time.monotonic() - started_at) >= time_limit_seconds
@@ -983,8 +1184,11 @@ def find_duplicate_files(
         if max_files is not None and index > max_files:
             result.skipped.append(f"limite de arquivos atingido na busca de repetidos: {max_files}")
             break
-        file_paths.append(path)
         summarize_file(path, root_path, result.file_summary, result.directory_summary)
+        if not include_cad and is_document_cad_file(path):
+            skipped_cad += 1
+            continue
+        file_paths.append(path)
         try:
             size = path.stat().st_size
         except OSError as exc:
@@ -1001,6 +1205,11 @@ def find_duplicate_files(
         result.skipped.append(
             f"duplicatas: {skipped_large} arquivo(s) acima de {max_file_size_mb} MB nao foram hasheados "
             "no modo rapido; use --full-duplicates para incluir arquivos grandes"
+        )
+    if skipped_cad:
+        result.skipped.append(
+            f"duplicatas: {skipped_cad} arquivo(s) CAD em Documentos ficaram protegidos; "
+            "marque Incluir/organizar CAD para comparar"
         )
 
     for size, candidates in by_size.items():
@@ -1196,6 +1405,7 @@ def move_duplicates_to_quarantine(
     cancel_event: threading.Event | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     include_manual_exact: bool = False,
+    include_cad: bool = False,
 ) -> ApplyResult:
     root_path = Path(root).expanduser()
     groups = (
@@ -1207,6 +1417,7 @@ def move_duplicates_to_quarantine(
             max_file_size_mb=duplicate_max_size_mb,
             workers=hash_workers,
             cancel_event=cancel_event,
+            include_cad=include_cad,
         ).duplicates
     )
     quarantine = root_path / "_duplicados"

@@ -322,8 +322,95 @@ def unique_path(path: Path) -> Path:
         counter += 1
 
 
+def company_standard_pdf_reason(path: Path) -> str | None:
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        return None
+
+    text = canonical_text(" ".join(path.parts))
+    name_text = canonical_text(path.name)
+    if any(canonical_text(doc) == name_text for doc in RAMTECH_STANDARD_DOCS):
+        return "pdf padrao de empresa: documento normativo Ramtech/Macrotec"
+
+    if any(marker in text for marker in ("padrao ramtech", "padrao macrotec", "padrao opcao", "padrao de pastas")):
+        return "pdf padrao de empresa: pasta/nome de padrao"
+
+    if re.match(r"^(it|po|fx)\s+\d", name_text):
+        return "pdf padrao de empresa: codigo normativo"
+
+    standard_terms = (
+        "padrao",
+        "procedimento",
+        "politica",
+        "norma",
+        "instrucao trabalho",
+        "manual qualidade",
+        "documentacao producao",
+        "template",
+        "modelo",
+    )
+    company_terms = (
+        "empresa",
+        "empresas",
+        "ramtech",
+        "macrotec",
+        "opcao",
+        "qualidade",
+        "industrializacao",
+        "fabricacao",
+    )
+    if any(term in text for term in standard_terms) and any(term in text for term in company_terms):
+        return "pdf padrao de empresa: norma/procedimento corporativo"
+
+    return None
+
+
+def book_pdf_reason(path: Path) -> str | None:
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        return None
+
+    text = canonical_text(" ".join(path.parts))
+    name_text = canonical_text(path.name)
+    if any(
+        marker in text
+        for marker in (
+            "para ler",
+            "base de dados para ler",
+            "biblioteca",
+            "livro",
+            "livros",
+            "ebook",
+            "e book",
+            "kindle",
+            "book",
+            "books",
+            "anna archive",
+            "annas archive",
+        )
+    ):
+        return "pdf livro/ebook: pasta ou nome de biblioteca/leitura"
+
+    if re.search(r"\b(?:isbn|978\d{10}|979\d{10})\b", name_text):
+        return "pdf livro/ebook: ISBN no nome"
+
+    if re.search(r"\b(?:robert c martin|martin fowler|scott millett|vaughn vernon)\b", name_text):
+        return "pdf livro/ebook: autor tecnico conhecido"
+
+    if re.search(r"\b(?:clean code|codigo limpo|arquitetura limpa|domain driven|ddd|design patterns)\b", name_text):
+        return "pdf livro/ebook: titulo tecnico de livro"
+
+    return None
+
+
+def file_summary_key(path: Path) -> str:
+    if company_standard_pdf_reason(path):
+        return ".pdf padrão empresa"
+    if book_pdf_reason(path):
+        return ".pdf livro"
+    return path.suffix.lower() or "(sem extensão)"
+
+
 def summarize_file(path: Path, root: Path, file_summary: dict[str, int], directory_summary: dict[str, int]) -> None:
-    ext = path.suffix.lower() or "(sem extensão)"
+    ext = file_summary_key(path)
     file_summary[ext] = file_summary.get(ext, 0) + 1
     try:
         relative = path.relative_to(root)

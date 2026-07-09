@@ -206,7 +206,7 @@ class ArrumaDirApp(tk.Tk):
         self.full_duplicates_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.cad_duplicates_check = ttk.Checkbutton(
             options,
-            text="Incluir duplicatas CAD",
+            text="Incluir/organizar CAD",
             variable=self.cad_duplicates_var,
         )
         self.cad_duplicates_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
@@ -476,7 +476,7 @@ class ArrumaDirApp(tk.Tk):
         if self.mode_var.get() == MODE_PROJECTS:
             self.compat_check.configure(state="disabled")
             self.full_duplicates_check.configure(state="normal")
-            self.cad_duplicates_check.configure(state="normal")
+            self.cad_duplicates_check.configure(text="Incluir duplicatas CAD", state="normal")
             self.external_check.configure(state="normal")
             self.external_entry.configure(state="normal")
             self.external_choose_button.configure(state="normal")
@@ -485,7 +485,7 @@ class ArrumaDirApp(tk.Tk):
         else:
             self.compat_check.configure(state="normal")
             self.full_duplicates_check.configure(state="normal")
-            self.cad_duplicates_check.configure(state="disabled")
+            self.cad_duplicates_check.configure(text="Incluir/organizar CAD", state="normal")
             self.external_check.configure(state="disabled")
             self.external_entry.configure(state="disabled")
             self.external_choose_button.configure(state="disabled")
@@ -808,6 +808,7 @@ class ArrumaDirApp(tk.Tk):
                 path,
                 compat_names=compat_names,
                 include_duplicates=include_duplicates,
+                include_cad=include_cad_duplicates,
                 duplicate_time_limit=None if full_duplicates else 90.0,
                 duplicate_max_size_mb=None if full_duplicates else 512,
                 hash_workers=workers,

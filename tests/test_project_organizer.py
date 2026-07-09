@@ -92,6 +92,25 @@ class ProjectOrganizerTests(unittest.TestCase):
             self.assertEqual(report.file_summary[".pdf"], 1)
             self.assertEqual(report.directory_summary["organizar"], 3)
 
+    def test_project_scan_separates_company_standard_and_book_pdfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            books = root / "projetos" / "Referencias" / "Biblioteca"
+            standards = root / "projetos" / "Ramtech" / "PADRAO RAMTECH"
+            normal_dir = root / "organizar"
+            books.mkdir(parents=True)
+            standards.mkdir(parents=True)
+            normal_dir.mkdir()
+            (books / "Implementing Domain-Driven Design.pdf").write_bytes(b"book")
+            (standards / "IT 05.01 - Criacao pasta virtual e montagem pasta fisica R01.pdf").write_bytes(b"standard")
+            (normal_dir / "painel.pdf").write_bytes(b"normal")
+
+            report = scan_projects(root, no_hash=True)
+
+            self.assertEqual(report.file_summary[".pdf livro"], 1)
+            self.assertEqual(report.file_summary[".pdf padrão empresa"], 1)
+            self.assertEqual(report.file_summary[".pdf"], 1)
+
     def test_loose_cad_file_is_not_organized_out_of_tree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

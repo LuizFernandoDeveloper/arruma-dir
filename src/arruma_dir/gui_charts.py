@@ -36,33 +36,51 @@ DEFAULT_PALETTE = ChartPalette(
 )
 
 
+def build_ranked_bars(
+    summary_data: dict[str, int],
+    *,
+    min_fraction: float = 0.03,
+    max_named_bars: int = 10,
+    other_label: str = "Outros",
+) -> list[ChartSlice]:
+    total_items = sum(summary_data.values())
+    if total_items <= 0:
+        return []
+
+    bars: list[ChartSlice] = []
+    other_size = 0
+    other_count = 0
+
+    for label, count in sorted(summary_data.items(), key=lambda item: item[1], reverse=True):
+        if count <= 0:
+            continue
+        if count / total_items >= min_fraction and len(bars) < max_named_bars:
+            bars.append(ChartSlice(label, count))
+        else:
+            other_size += count
+            other_count += 1
+
+    if other_size > 0:
+        suffix = f" ({other_count} tipos)" if other_count else ""
+        bars.append(ChartSlice(f"{other_label}{suffix}", other_size))
+
+    return bars
+
+
 def build_pie_slices(
     summary_data: dict[str, int],
     *,
     min_fraction: float = 0.01,
     max_named_slices: int = 15,
 ) -> list[ChartSlice]:
-    total_files = sum(summary_data.values())
-    if total_files <= 0:
-        return []
-
-    slices: list[ChartSlice] = []
-    other_size = 0
-    other_count = 0
-
-    for extension, count in sorted(summary_data.items(), key=lambda item: item[1], reverse=True):
-        if count <= 0:
-            continue
-        if count / total_files > min_fraction and len(slices) < max_named_slices:
-            slices.append(ChartSlice(f"{extension} ({count})", count))
-        else:
-            other_size += count
-            other_count += 1
-
-    if other_size > 0:
-        slices.append(ChartSlice(f"Outros ({other_count} tipos)", other_size))
-
-    return slices
+    return [
+        ChartSlice(f"{item.label} ({item.count})" if not item.label.startswith("Outros") else item.label, item.count)
+        for item in build_ranked_bars(
+            summary_data,
+            min_fraction=min_fraction,
+            max_named_bars=max_named_slices,
+        )
+    ]
 
 
 def build_directory_bars(directory_data: dict[str, int], *, max_named_bars: int = 12) -> list[ChartSlice]:
@@ -77,6 +95,13 @@ def build_directory_bars(directory_data: dict[str, int], *, max_named_bars: int 
         top_items.append(("Outros", other_count))
 
     return [ChartSlice(name, count) for name, count in reversed(top_items)]
+
+
+def percent_text(count: int, total: int) -> str:
+    if total <= 0:
+        return "0%"
+    percent = (count / total) * 100
+    return f"{percent:.1f}%"
 
 
 class LazyChartDeck:
@@ -115,35 +140,43 @@ class LazyChartDeck:
         ).pack(expand=True)
 
     def clear(self) -> None:
-        self._clear_pie_chart()
+        self._clear_file_type_chart()
         self._clear_directory_chart()
 
     def update_file_summary(self, summary_data: dict[str, int]) -> None:
-        slices = build_pie_slices(summary_data)
-        if not slices:
-            self._clear_pie_chart()
+        bars = build_ranked_bars(summary_data)
+        if not bars:
+            self._clear_file_type_chart()
             return
         if not self._ensure_canvases():
             return
 
-        labels = [item.label for item in slices]
-        sizes = [item.count for item in slices]
-        total_files = sum(sizes)
+        total_files = sum(summary_data.values())
+        ordered_bars = list(reversed(bars))
+        labels = [item.label for item in ordered_bars]
+        sizes = [item.count for item in ordered_bars]
+        colors = [self.palette.bar_colors[index % len(self.palette.bar_colors)] for index in range(len(labels))]
 
         self.summary_ax.clear()
-        _, texts, autotexts = self.summary_ax.pie(
-            sizes,
-            labels=labels,
-            autopct="%1.1f%%",
-            startangle=140,
-            pctdistance=0.85,
-        )
-        for text in texts:
-            text.set_color(self.palette.title_fg)
-        for autotext in autotexts:
-            autotext.set_color("#ffffff")
-        self.summary_ax.set_title(f"Distribuicao de {total_files} Arquivos por Tipo", color=self.palette.title_fg)
-        self.summary_ax.axis("equal")
+        self.summary_ax.barh(labels, sizes, color=colors)
+        self.summary_ax.set_title(f"Distribuicao de {total_files} arquivos por tipo", color=self.palette.title_fg)
+        self.summary_ax.set_xlabel("Arquivos")
+        self.summary_ax.tick_params(axis="x", colors=self.palette.axis_fg)
+        self.summary_ax.tick_params(axis="y", colors=self.palette.axis_fg, labelsize=9)
+        self.summary_ax.grid(axis="x", color=self.palette.grid_fg, linewidth=0.8)
+        self._style_bar_axes(self.summary_ax)
+        for index, count in enumerate(sizes):
+            self.summary_ax.text(
+                count,
+                index,
+                f" {count} ({percent_text(count, total_files)})",
+                va="center",
+                color=self.palette.title_fg,
+                fontsize=8,
+            )
+        max_value = max(sizes)
+        self.summary_ax.set_xlim(0, max_value * 1.22)
+        self.summary_figure.subplots_adjust(left=0.16, right=0.93, top=0.86, bottom=0.18)
         if self.summary_canvas:
             self.summary_canvas.draw()
 
@@ -167,12 +200,18 @@ class LazyChartDeck:
         self.directory_ax.tick_params(axis="x", colors=self.palette.axis_fg)
         self.directory_ax.tick_params(axis="y", colors=self.palette.axis_fg, labelsize=8)
         self.directory_ax.grid(axis="x", color=self.palette.grid_fg, linewidth=0.8)
-        self.directory_ax.spines["top"].set_visible(False)
-        self.directory_ax.spines["right"].set_visible(False)
-        self.directory_ax.spines["left"].set_color("#cbd5e1")
-        self.directory_ax.spines["bottom"].set_color("#cbd5e1")
+        self._style_bar_axes(self.directory_ax)
         for index, count in enumerate(sizes):
-            self.directory_ax.text(count, index, f" {count}", va="center", color=self.palette.title_fg, fontsize=8)
+            self.directory_ax.text(
+                count,
+                index,
+                f" {count} ({percent_text(count, total_files)})",
+                va="center",
+                color=self.palette.title_fg,
+                fontsize=8,
+            )
+        max_value = max(sizes)
+        self.directory_ax.set_xlim(0, max_value * 1.22)
         if self.directory_canvas:
             self.directory_canvas.draw()
 
@@ -189,10 +228,10 @@ class LazyChartDeck:
 
         for child in self.summary_frame.winfo_children():
             child.destroy()
-        self.summary_figure = Figure(figsize=(5, 4), dpi=100, facecolor=self.palette.app_bg)
+        self.summary_figure = Figure(figsize=(8, 3.2), dpi=100, facecolor=self.palette.app_bg)
         self.summary_ax = self.summary_figure.add_subplot(111)
         self.summary_ax.set_facecolor(self.palette.app_bg)
-        self.summary_figure.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
+        self.summary_figure.subplots_adjust(left=0.16, right=0.93, top=0.86, bottom=0.18)
         self.summary_canvas = FigureCanvasTkAgg(self.summary_figure, self.summary_frame)
         self.summary_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -206,7 +245,13 @@ class LazyChartDeck:
         self.directory_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         return True
 
-    def _clear_pie_chart(self) -> None:
+    def _style_bar_axes(self, axis: Any) -> None:
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+        axis.spines["left"].set_color("#cbd5e1")
+        axis.spines["bottom"].set_color("#cbd5e1")
+
+    def _clear_file_type_chart(self) -> None:
         if not self.summary_ax:
             return
         self.summary_ax.clear()
