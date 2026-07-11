@@ -30,6 +30,9 @@ class OrganizerTests(unittest.TestCase):
             path = Path(tmp) / "8 - Portifolio Programacao de CNC"
             path.mkdir()
             self.assertEqual(clean_leaf_name(path, compat_names=True), "portifolio-programacao-de-cnc")
+            dated = Path(tmp) / "02-05-2025.ods"
+            dated.write_text("data", encoding="utf-8")
+            self.assertEqual(clean_leaf_name(dated, compat_names=True), "02-05-2025.ods")
 
     def test_scan_categorizes_numbered_folders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +100,95 @@ class OrganizerTests(unittest.TestCase):
             self.assertTrue((correct / "imagem-nova.jpg").exists())
             self.assertTrue((correct / "existente.txt").exists())
             self.assertFalse((root / "fotos-cliente-final (2)").exists())
+
+    def test_name_standardization_preserves_arruma_standard_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            standard_company = root / "areas" / "empresas_financeiro" / "padroes"
+            standard_plc = root / "projetos" / "automacao_codigo" / "plc"
+            wrong_inside = root / "areas" / "empresas_financeiro" / "lançamento  de  produtos  e empressas"
+            standard_company.mkdir(parents=True)
+            standard_plc.mkdir(parents=True)
+            wrong_inside.mkdir()
+
+            scan = scan_name_standardization(root)
+            sources = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertNotIn("areas", sources)
+            self.assertNotIn("empresas_financeiro", sources)
+            self.assertNotIn("automacao_codigo", sources)
+            self.assertNotIn("plc", sources)
+            self.assertIn(wrong_inside.name, sources)
+            self.assertEqual(Path(sources[wrong_inside.name].destination).name, "lancamento-de-produtos-e-empressas")
+
+    def test_name_standardization_renames_repository_folder_without_entering_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "projetos" / "automacao_codigo" / "Meu Repo"
+            (repo / ".git" / "refs").mkdir(parents=True)
+            (repo / "node_modules" / "Pacote Ruim").mkdir(parents=True)
+            (repo / "target" / "Debug Build").mkdir(parents=True)
+
+            scan = scan_name_standardization(root)
+            sources = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertIn("Meu Repo", sources)
+            self.assertEqual(Path(sources["Meu Repo"].destination).name, "meu-repo")
+            self.assertNotIn("Pacote Ruim", sources)
+            self.assertNotIn("Debug Build", sources)
+            self.assertTrue(any("conteudo de projeto/repositorio preservado" in item for item in scan.skipped))
+
+    def test_name_standardization_skips_code_project_contents_without_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "recursos" / "engenharia" / "Projeto Web"
+            app = project / "src" / "app"
+            app.mkdir(parents=True)
+            (project / "package.json").write_text("{}", encoding="utf-8")
+            (app / "app.spec.ts").write_text("test", encoding="utf-8")
+
+            scan = scan_name_standardization(root)
+            sources = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertIn("Projeto Web", sources)
+            self.assertEqual(Path(sources["Projeto Web"].destination).name, "projeto-web")
+            self.assertNotIn("app.spec.ts", sources)
+            self.assertTrue(any("conteudo de projeto/repositorio preservado" in item for item in scan.skipped))
+
+    def test_name_standardization_preserves_dotfiles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".editorconfig").write_text("root = true", encoding="utf-8")
+            (root / ".gitignore").write_text("__pycache__/", encoding="utf-8")
+
+            scan = scan_name_standardization(root)
+            sources = {Path(item.source).name for item in scan.plan}
+
+            self.assertNotIn(".editorconfig", sources)
+            self.assertNotIn(".gitignore", sources)
+
+    def test_apply_plan_removes_old_topic_folders_after_merge_with_windows_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = {
+                "10-engenharia": ("recursos", "engenharia", "nota.txt"),
+                "7 -  Estudos": ("recursos", "estudos", "aula.pdf"),
+                "9 - Empresas": ("areas", "empresas_financeiro", "boleto.pdf"),
+                "plc": ("projetos", "automacao_codigo", "plc", "programa.stu"),
+            }
+            for source_name, parts in cases.items():
+                source = root / source_name
+                source.mkdir()
+                (source / parts[-1]).write_text("conteudo", encoding="utf-8")
+                (source / "desktop.ini").write_text("[ViewState]", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            result = apply_plan(scan.plan, root)
+
+            self.assertFalse(result.errors)
+            for source_name, parts in cases.items():
+                self.assertFalse((root / source_name).exists())
+                self.assertTrue((root / Path(*parts)).exists())
 
     def test_plc_extensions_go_to_plc_project_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

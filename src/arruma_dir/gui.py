@@ -516,8 +516,12 @@ class ArrumaDirApp(tk.Tk):
             f"Raiz: {root}",
             f"Itens planejados: {len(operations)}",
             f"Acoes: {action_summary}",
-            "",
         ]
+        if "merge_dir" in action_counts:
+            lines.append(
+                "Nota: merge_dir move o conteudo para a pasta padrao e remove a pasta antiga quando ela fica vazia."
+            )
+        lines.append("")
         lines.extend(
             self._format_path_tree(
                 root,

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 import unicodedata
@@ -18,7 +19,7 @@ from typing import Iterable
 
 CHUNK_SIZE = 1024 * 1024
 INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[-_. ]+\s*")
+LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[-_. ]+\s*(?=[^\d\s])")
 SPACES_RE = re.compile(r"\s+")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 BUSINESS_PROJECT_CODE_RE = re.compile(r"\b[CPRS]\s*-?\s*\d{4,7}(?:[-_ ]?\d{1,4})?\b", re.IGNORECASE)
@@ -43,6 +44,8 @@ SKIP_NAMES = {
     "$recycle.bin",
     "system volume information",
 }
+MERGE_DISCARD_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
+MERGE_DISCARD_PREFIXES = ("~$", ".tmp")
 
 GENERATED_DIRS = {"_arruma_dir", "_duplicados"}
 PRODUCTIVITY_DIRS = {"entrada", "projetos", "areas", "recursos", "arquivo"}
@@ -216,6 +219,22 @@ SKIP_WALK_DIRS = GENERATED_DIRS | {
     "dist",
     "build",
     "target",
+}
+PROJECT_ROOT_MARKER_FILES = {
+    "package.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package-lock.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "settings.gradle",
+    "composer.json",
+    "Gemfile",
+    "mix.exs",
 }
 
 
@@ -553,6 +572,11 @@ DEFAULT_TOPICS: tuple[Topic, ...] = (
 
 TOPIC_DIRS = {Path(topic.directory).parts[0].lower() for topic in DEFAULT_TOPICS} | PRODUCTIVITY_DIRS
 REPOSITORY_TOPIC_IDS = {"automacao", "plc"}
+STANDARD_DIRECTORY_PATHS = {
+    Path(*Path(topic.directory).parts[:index])
+    for topic in DEFAULT_TOPICS
+    for index in range(1, len(Path(topic.directory).parts) + 1)
+} | {Path(directory) for directory in PRODUCTIVITY_DIRS}
 
 
 @dataclass
@@ -718,6 +742,29 @@ def is_generated_or_topic_dir(path: Path) -> bool:
         return False
     lowered = path.name.lower()
     return lowered in GENERATED_DIRS or lowered in TOPIC_DIRS
+
+
+def is_standard_organization_dir(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return relative in STANDARD_DIRECTORY_PATHS
+
+
+def is_repository_root(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if (path / ".git").exists():
+        return True
+    if any((path / marker).exists() for marker in PROJECT_ROOT_MARKER_FILES):
+        return True
+    return any(path.glob("*.csproj")) or any(path.glob("*.sln"))
+
+
+def should_skip_standardization_dir(name: str) -> bool:
+    lowered = name.lower().strip()
+    return should_skip_name(name) or name.startswith(".") or lowered in SKIP_WALK_DIRS
 
 
 def is_internal_generated_dir(path: Path) -> bool:
@@ -1178,7 +1225,7 @@ def scan_name_standardization(
         filtered_dirs: list[str] = []
         for dirname in dirnames:
             child = current / dirname
-            if should_skip_name(dirname) or is_internal_generated_dir(child) or is_protected_app_dir(child):
+            if should_skip_standardization_dir(dirname) or is_internal_generated_dir(child) or is_protected_app_dir(child):
                 continue
             if has_business_standard_context(child):
                 result.skipped.append(f"padrao Ramtech/Opcao preservado: {child}")
@@ -1186,12 +1233,19 @@ def scan_name_standardization(
             if not include_cad and is_document_cad_entry(child):
                 result.skipped.append(f"CAD protegido na padronizacao: {child}; marque Incluir/organizar CAD para renomear")
                 continue
+            if is_repository_root(child):
+                result.skipped.append(f"conteudo de projeto/repositorio preservado: {child}")
+                if not is_standard_organization_dir(root_path, child):
+                    entries.append(child)
+                continue
             filtered_dirs.append(dirname)
+            if is_standard_organization_dir(root_path, child):
+                continue
             entries.append(child)
         dirnames[:] = filtered_dirs
 
         for filename in filenames:
-            if should_skip_name(filename):
+            if should_skip_name(filename) or filename.startswith("."):
                 continue
             child = current / filename
             summarize_file(child, root_path, result.file_summary, result.directory_summary)
@@ -1289,6 +1343,8 @@ def apply_plan(
                     continue
                 moves = _merge_directory(source, destination, dry_run=dry_run, cancel_event=cancel_event)
                 result.moved.extend(moves)
+                if not dry_run and source.exists():
+                    result.skipped.append(f"pasta original mantida porque ainda contem itens protegidos: {source}")
             elif item.action in {"move", "rename"}:
                 target = unique_path(destination)
                 if dry_run:
@@ -1358,6 +1414,8 @@ def _merge_directory(
         if is_cancelled(cancel_event):
             raise InterruptedError("Aplicacao do plano cancelada pelo usuario.")
         if should_skip_name(child.name):
+            if not dry_run:
+                _discard_merge_skip_item(child)
             continue
         target = destination / clean_leaf_name(child, compat_names=True)
         if child.is_dir() and target.exists() and target.is_dir():
@@ -1376,6 +1434,21 @@ def _merge_directory(
         except OSError:
             pass
     return moves
+
+
+def _discard_merge_skip_item(path: Path) -> None:
+    lowered = path.name.lower().strip()
+    can_discard = lowered in MERGE_DISCARD_NAMES or lowered.startswith(MERGE_DISCARD_PREFIXES)
+    if not can_discard:
+        return
+    try:
+        if path.is_dir():
+            path.rmdir()
+            return
+        path.chmod(stat.S_IWRITE)
+        path.unlink()
+    except OSError:
+        pass
 
 
 def iter_files(root: Path) -> Iterable[Path]:
