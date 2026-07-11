@@ -21,6 +21,12 @@ INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[-_. ]+\s*")
 SPACES_RE = re.compile(r"\s+")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+BUSINESS_PROJECT_CODE_RE = re.compile(r"\b[CPRS]\s*-?\s*\d{4,7}(?:[-_ ]?\d{1,4})?\b", re.IGNORECASE)
+OPCAO_PROJECT_CODE_RE = re.compile(
+    r"^(?:OP[- ]?\d{2,5}(?:[- ]?\d{1,4})*(?:[- ]?XXX)?|"
+    r"\d{3,6}(?:[-_ ]\d{1,4})*(?:[-_ ]?REV\d{1,2})?)",
+    re.IGNORECASE,
+)
 RESERVED_WINDOWS_NAMES = {
     "CON",
     "PRN",
@@ -40,6 +46,12 @@ SKIP_NAMES = {
 
 GENERATED_DIRS = {"_arruma_dir", "_duplicados"}
 PRODUCTIVITY_DIRS = {"entrada", "projetos", "areas", "recursos", "arquivo"}
+BUSINESS_STANDARD_MARKERS = {
+    "ramtech",
+    "macrotec",
+    "opcao",
+    "opcao industrial",
+}
 DOCUMENT_CAD_FILENAMES = {".project"}
 DOCUMENT_CAD_NAME_ENDINGS = (".proj.tewzip",)
 SOLIDWORKS_ELECTRICAL_EXTENSIONS = {
@@ -651,8 +663,8 @@ def safe_display_name(value: str) -> str:
 
 def slug_name(value: str) -> str:
     value = remove_accents(strip_leading_number(value)).lower()
-    value = NON_WORD_RE.sub("_", value)
-    value = re.sub(r"_+", "_", value).strip("_")
+    value = NON_WORD_RE.sub("-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
     return value or "sem_nome"
 
 
@@ -676,6 +688,15 @@ def clean_leaf_name(path: Path, compat_names: bool = False) -> str:
         clean_suffix = suffix
 
     return f"{clean_stem}{clean_suffix}" if clean_suffix else clean_stem
+
+
+def has_business_standard_context(path: Path) -> bool:
+    parts = {canonical_text(part) for part in path.parts}
+    if parts & BUSINESS_STANDARD_MARKERS:
+        return True
+    if BUSINESS_PROJECT_CODE_RE.search(path.name):
+        return True
+    return bool(OPCAO_PROJECT_CODE_RE.search(path.name))
 
 
 def should_skip_name(name: str) -> bool:
@@ -1021,7 +1042,7 @@ def summarize_file(path: Path, root: Path, file_summary: dict[str, int], directo
 def scan_directory(
     root: str | Path,
     *,
-    compat_names: bool = False,
+    compat_names: bool = True,
     include_duplicates: bool = True,
     include_cad: bool = False,
     duplicate_time_limit: float | None = 90.0,
@@ -1133,6 +1154,83 @@ def scan_directory(
     return result
 
 
+def scan_name_standardization(
+    root: str | Path,
+    *,
+    include_cad: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> ScanResult:
+    root_path = Path(root).expanduser()
+    if not root_path.exists():
+        raise FileNotFoundError(root_path)
+    if not root_path.is_dir():
+        raise NotADirectoryError(root_path)
+
+    result = ScanResult(root=str(root_path), generated_at=utc_now())
+    entries: list[Path] = []
+
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        if is_cancelled(cancel_event):
+            result.skipped.append("operacao cancelada pelo usuario durante a padronizacao")
+            break
+
+        current = Path(dirpath)
+        filtered_dirs: list[str] = []
+        for dirname in dirnames:
+            child = current / dirname
+            if should_skip_name(dirname) or is_internal_generated_dir(child) or is_protected_app_dir(child):
+                continue
+            if has_business_standard_context(child):
+                result.skipped.append(f"padrao Ramtech/Opcao preservado: {child}")
+                continue
+            if not include_cad and is_document_cad_entry(child):
+                result.skipped.append(f"CAD protegido na padronizacao: {child}; marque Incluir/organizar CAD para renomear")
+                continue
+            filtered_dirs.append(dirname)
+            entries.append(child)
+        dirnames[:] = filtered_dirs
+
+        for filename in filenames:
+            if should_skip_name(filename):
+                continue
+            child = current / filename
+            summarize_file(child, root_path, result.file_summary, result.directory_summary)
+            if has_business_standard_context(child):
+                result.skipped.append(f"padrao Ramtech/Opcao preservado: {child}")
+                continue
+            if not include_cad and is_document_cad_file(child):
+                result.skipped.append(f"CAD protegido na padronizacao: {child}; marque Incluir/organizar CAD para renomear")
+                continue
+            entries.append(child)
+
+    entries.sort(key=lambda path: (len(path.parts), str(path).lower()), reverse=True)
+    for entry in entries:
+        if is_cancelled(cancel_event):
+            result.skipped.append("operacao cancelada pelo usuario durante a montagem da previa")
+            break
+        target = entry.parent / clean_leaf_name(entry, compat_names=True)
+        if entry.resolve(strict=False) == target.resolve(strict=False):
+            continue
+        action = "rename"
+        reason = "padrao de nome: minusculas, ASCII e hifens"
+        if entry.is_dir() and target.exists() and target.is_dir():
+            action = "merge_dir"
+            reason = "padrao de nome: pasta destino ja existe; mesclar para evitar duplicar"
+        result.plan.append(
+            PlanItem(
+                action=action,
+                source=str(entry),
+                destination=str(target),
+                category="padronizacao/nomes",
+                reason=reason,
+                is_directory=entry.is_dir(),
+                size=entry.stat().st_size if entry.is_file() else None,
+            )
+        )
+
+    return result
+
+
 def write_scan_json(scan: ScanResult, path: str | Path) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1191,7 +1289,7 @@ def apply_plan(
                     continue
                 moves = _merge_directory(source, destination, dry_run=dry_run, cancel_event=cancel_event)
                 result.moved.extend(moves)
-            elif item.action == "move":
+            elif item.action in {"move", "rename"}:
                 target = unique_path(destination)
                 if dry_run:
                     result.moved.append((str(source), str(target)))
@@ -1261,7 +1359,11 @@ def _merge_directory(
             raise InterruptedError("Aplicacao do plano cancelada pelo usuario.")
         if should_skip_name(child.name):
             continue
-        target = unique_path(destination / child.name)
+        target = destination / clean_leaf_name(child, compat_names=True)
+        if child.is_dir() and target.exists() and target.is_dir():
+            moves.extend(_merge_directory(child, target, dry_run=dry_run, cancel_event=cancel_event))
+            continue
+        target = unique_path(target)
         if dry_run:
             moves.append((str(child), str(target)))
             continue

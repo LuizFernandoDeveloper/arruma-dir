@@ -44,7 +44,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan = subparsers.add_parser("scan", help="gera uma pre-visualizacao sem mover arquivos")
     scan.add_argument("path", nargs="?", default=str(default_documents_path()))
-    scan.add_argument("--compat-names", action="store_true", help="usa nomes sem acentos e sem espacos")
+    name_options = scan.add_mutually_exclusive_group()
+    name_options.add_argument(
+        "--compat-names",
+        dest="compat_names",
+        action="store_true",
+        default=True,
+        help="usa nomes padronizados: minusculos, ASCII e hifens (padrao)",
+    )
+    name_options.add_argument(
+        "--keep-display-names",
+        dest="compat_names",
+        action="store_false",
+        help="preserva nomes mais proximos do original, apenas removendo caracteres invalidos",
+    )
     scan.add_argument("--no-duplicates", action="store_true", help="nao calcula arquivos repetidos")
     scan.add_argument(
         "--include-cad",

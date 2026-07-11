@@ -21,11 +21,13 @@ from arruma_dir.organizer import (
     apply_plan,
     choose_duplicate_keeper,
     default_documents_path,
+    duplicate_hash_label,
     is_batch_safe_duplicate_group,
     move_duplicates_to_quarantine,
     move_files_to_quarantine,
     rollback_moves,
     scan_directory,
+    scan_name_standardization,
     write_scan_json,
 )
 from arruma_dir.project_organizer import (
@@ -73,7 +75,7 @@ class ArrumaDirApp(tk.Tk):
 
         self.mode_var = tk.StringVar(value=MODE_DOCUMENTS)
         self.path_var = tk.StringVar(value=str(default_documents_path()))
-        self.compat_var = tk.BooleanVar(value=False)
+        self.compat_var = tk.BooleanVar(value=True)
         self.duplicates_var = tk.BooleanVar(value=True)
         self.full_duplicates_var = tk.BooleanVar(value=False)
         self.cad_duplicates_var = tk.BooleanVar(value=False)
@@ -249,20 +251,22 @@ class ArrumaDirApp(tk.Tk):
 
         self.scan_button = ttk.Button(actions, text="Gerar previa", command=self.scan, style="Primary.TButton")
         self.scan_button.grid(row=0, column=0, sticky="ew")
+        self.standardize_button = ttk.Button(actions, text="Padronizar nomes", command=self.standardize_names)
+        self.standardize_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.export_button = ttk.Button(actions, text="Exportar JSON", command=self.export_json)
-        self.export_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.export_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.move_selected_button = ttk.Button(actions, text="Mover item selecionado", command=self.move_selected_duplicate)
-        self.move_selected_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.move_selected_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self.move_duplicates_button = ttk.Button(actions, text="Mover duplicatas seguras", command=self.move_duplicates)
-        self.move_duplicates_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.move_duplicates_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
-        self.apply_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.apply_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         self.populate_base_button = ttk.Button(actions, text="Popular base", command=self.populate_base)
-        self.populate_base_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.populate_base_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         self.rollback_button = ttk.Button(actions, text="Voltar ultima acao", command=self.rollback_last_action)
-        self.rollback_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        self.rollback_button.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         self.stop_button = ttk.Button(actions, text="Parar Operacao", command=self.cancel_operation, style="Stop.TButton")
-        self.stop_button.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        self.stop_button.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.stop_button.grid_remove()
 
 
@@ -507,6 +511,7 @@ class ArrumaDirApp(tk.Tk):
         normal = "normal"
         disabled = "disabled"
         self.scan_button.configure(state=disabled if self.busy else normal)
+        self.standardize_button.configure(state=disabled if self.busy else normal)
         self.export_button.configure(state=normal if has_scan and not self.busy else disabled)
         self.apply_button.configure(state=normal if has_apply_plan and not self.busy else disabled)
         self.populate_base_button.configure(
@@ -821,6 +826,42 @@ class ArrumaDirApp(tk.Tk):
         except Exception as exc:  # noqa: BLE001 - shown in GUI.
             self.work_queue.put(("error", exc))
 
+    def standardize_names(self) -> None:
+        if self._check_current_root() is None:
+            return
+        root = Path(self.path_var.get().strip()).expanduser()
+        self.cancel_event.clear()
+        self._set_busy(
+            "Gerando previa de padronizacao de nomes...",
+            indeterminate=True,
+            detail="Ramtech/Opcao e CAD protegido ficam preservados.",
+        )
+        self.scan_result = None
+        self.project_report = None
+        self.active_mode = None
+        self.active_root = None
+        self.duplicate_rows.clear()
+        self._clear_tree(self.plan_tree)
+        self._clear_tree(self.duplicate_tree)
+        self._clear_charts()
+        self._reset_summary()
+        self.next_step_var.set("Revise a aba Plano. Se estiver correto, use Aplicar plano para renomear.")
+        thread = threading.Thread(
+            target=self._standardize_worker,
+            args=(str(root), self.cad_duplicates_var.get(), self.cancel_event),
+            daemon=True,
+        )
+        thread.start()
+
+    def _standardize_worker(self, path: str, include_cad: bool, cancel_event: threading.Event) -> None:
+        try:
+            result = scan_name_standardization(path, include_cad=include_cad, cancel_event=cancel_event)
+            self.work_queue.put(("standardization_scan_done", result))
+        except InterruptedError as exc:
+            self.work_queue.put(("cancelled", str(exc) or "Padronizacao cancelada."))
+        except Exception as exc:
+            self.work_queue.put(("error", exc))
+
     def apply_organization(self) -> None:
         if not self._require_same_root():
             return
@@ -852,12 +893,20 @@ class ArrumaDirApp(tk.Tk):
             messagebox.showinfo("Arruma Dir", "Nenhum plano carregado.")
             return
         count = len(self.scan_result.plan)
+        standardization_plan = all(item.category == "padronizacao/nomes" for item in self.scan_result.plan)
+        title = "Aplicar padronizacao" if standardization_plan else "Aplicar organizacao"
+        verb = "Padronizar" if standardization_plan else "Mover"
+        detail = (
+            "Ramtech/Opcao e CAD protegido ja ficaram fora da previa quando detectados."
+            if standardization_plan
+            else "Nada sera apagado. Destinos ficam dentro da pasta escolhida."
+        )
         if not self._confirm_action(
-            "Aplicar organizacao",
-            f"Mover {count} item(ns) do plano agora?\n\nNada sera apagado. Destinos ficam dentro da pasta escolhida.",
+            title,
+            f"{verb} {count} item(ns) do plano agora?\n\n{detail}",
         ):
             return
-        self._set_busy("Aplicando organizacao...")
+        self._set_busy("Aplicando padronizacao..." if standardization_plan else "Aplicando organizacao...")
         progress_callback = self._create_progress_callback()
         thread = threading.Thread(target=self._apply_worker, args=(self.cancel_event, progress_callback), daemon=True)
         thread.start()
@@ -973,7 +1022,8 @@ class ArrumaDirApp(tk.Tk):
             if not self._confirm_action(
                 "Mover duplicatas",
                 f"Mover {count} duplicata(s) exata(s) para a quarentena _arruma_projetos?\n\n"
-                "Arquivos CAD so aparecem aqui se voce marcou a opcao de incluir duplicatas CAD.",
+                "Arquivos CAD so entram aqui se voce marcou a opcao de incluir duplicatas CAD. "
+                "Possiveis duplicatas ficam no lugar.",
             ):
                 return
             self._set_busy("Movendo duplicatas de projetos...")
@@ -992,7 +1042,7 @@ class ArrumaDirApp(tk.Tk):
         if not self._confirm_action(
             "Mover duplicatas",
             "Mover somente copias exatamente iguais com marcador de copia para _duplicados?\n\n"
-            "Arquivos parecidos ou sem marcador claro ficam no lugar para decisao manual.",
+            "Possiveis duplicatas, itens sem hash e arquivos sem marcador claro ficam no lugar para decisao manual.",
         ):
             return
         self._set_busy("Movendo repetidos...")
@@ -1191,6 +1241,8 @@ class ArrumaDirApp(tk.Tk):
                 event, payload = self.work_queue.get_nowait()
                 if event == "scan_done":
                     self._on_scan_done(payload)  # type: ignore[arg-type]
+                elif event == "standardization_scan_done":
+                    self._on_standardization_scan_done(payload)  # type: ignore[arg-type]
                 elif event == "project_scan_done":
                     self._on_project_scan_done(payload)  # type: ignore[arg-type]
                 elif event in {"apply_done", "dedupe_done", "selected_duplicate_done"}:
@@ -1257,7 +1309,7 @@ class ArrumaDirApp(tk.Tk):
                     values=(
                         group.kind,
                         group.size if group.size else "varios",
-                        group.sha256[:12] if group.sha256 else "-",
+                        duplicate_hash_label(group),
                         f"{marker}: {file_path}",
                         differences,
                     ),
@@ -1294,6 +1346,16 @@ class ArrumaDirApp(tk.Tk):
         self._update_pie_chart(result.file_summary)
         self._update_directory_chart(result.directory_summary)
         self._finish_busy()
+
+    def _on_standardization_scan_done(self, result: ScanResult) -> None:
+        self._on_scan_done(result)
+        stats = result.stats
+        self.status_var.set(f"Padronizacao: {stats['planned_moves']} renomeacao(oes), {stats['errors']} erros")
+        if stats["planned_moves"]:
+            self.next_step_var.set("Revise a aba Plano. Use Aplicar plano para renomear os itens listados.")
+        else:
+            self.next_step_var.set("Nenhum nome fora do padrao encontrado fora das areas preservadas.")
+        self._append_log("Previa de padronizacao concluida. Ramtech/Opcao foram preservados quando detectados.")
 
     def _on_project_scan_done(self, report: ProjectReport) -> None:
         self.project_report = report
@@ -1374,6 +1436,10 @@ class ArrumaDirApp(tk.Tk):
             "selected_duplicate_done": "Item selecionado",
         }
         label = labels.get(event, "Acao")
+        if event == "apply_done" and self.scan_result and all(
+            item.category == "padronizacao/nomes" for item in self.scan_result.plan
+        ):
+            label = "Padronizacao"
         self.status_var.set(f"{label}: {len(result.moved)} movimentos, {len(result.errors)} erros")
         self.next_step_var.set("Acao concluida. Gere uma nova previa para validar o estado atual da pasta.")
         self._append_log(f"{label}: {len(result.moved)} movimentos")

@@ -14,6 +14,7 @@ from arruma_dir.organizer import (
     move_duplicates_to_quarantine,
     rollback_moves,
     scan_directory,
+    scan_name_standardization,
     strip_leading_number,
 )
 
@@ -28,7 +29,7 @@ class OrganizerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "8 - Portifolio Programacao de CNC"
             path.mkdir()
-            self.assertEqual(clean_leaf_name(path, compat_names=True), "portifolio_programacao_de_cnc")
+            self.assertEqual(clean_leaf_name(path, compat_names=True), "portifolio-programacao-de-cnc")
 
     def test_scan_categorizes_numbered_folders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -53,7 +54,49 @@ class OrganizerTests(unittest.TestCase):
             scan = scan_directory(root, include_duplicates=False)
 
             self.assertEqual(len(scan.plan), 1)
-            self.assertEqual(Path(scan.plan[0].destination).parts[-2:], ("automacao_codigo", "python_scripts"))
+            self.assertEqual(Path(scan.plan[0].destination).parts[-2:], ("automacao_codigo", "python-scripts"))
+
+    def test_name_standardization_renames_common_folders_but_preserves_business_standards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = root / "Fotos Cliente Final"
+            common.mkdir()
+            ramtech = root / "P20051-792589 - BEM BRASIL"
+            ramtech.mkdir()
+            opcao = root / "047-007-000-REV00 - MONTAGEM DO FORNO"
+            opcao.mkdir()
+
+            scan = scan_name_standardization(root)
+            by_source = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertIn(common.name, by_source)
+            self.assertEqual(Path(by_source[common.name].destination).name, "fotos-cliente-final")
+            self.assertNotIn(ramtech.name, by_source)
+            self.assertNotIn(opcao.name, by_source)
+            self.assertTrue(any("Ramtech/Opcao" in item for item in scan.skipped))
+
+    def test_name_standardization_merges_existing_standard_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong = root / "Fotos Cliente Final"
+            correct = root / "fotos-cliente-final"
+            wrong.mkdir()
+            correct.mkdir()
+            (wrong / "Imagem Nova.JPG").write_bytes(b"nova")
+            (correct / "existente.txt").write_text("ok", encoding="utf-8")
+
+            scan = scan_name_standardization(root)
+            merge_items = [item for item in scan.plan if item.source == str(wrong)]
+
+            self.assertEqual(len(merge_items), 1)
+            self.assertEqual(merge_items[0].action, "merge_dir")
+            result = apply_plan(scan.plan, root)
+
+            self.assertFalse(result.errors)
+            self.assertFalse(wrong.exists())
+            self.assertTrue((correct / "imagem-nova.jpg").exists())
+            self.assertTrue((correct / "existente.txt").exists())
+            self.assertFalse((root / "fotos-cliente-final (2)").exists())
 
     def test_plc_extensions_go_to_plc_project_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -67,7 +110,7 @@ class OrganizerTests(unittest.TestCase):
             by_name = {Path(item.source).name: item for item in scan.plan}
 
             self.assertEqual(by_name[ladder.name].category, "projetos/automacao_codigo/plc")
-            self.assertEqual(Path(by_name[ladder.name].destination).name, "exercicio_5_de_ladder.stu")
+            self.assertEqual(Path(by_name[ladder.name].destination).name, "exercicio-5-de-ladder.stu")
             self.assertEqual(by_name[archive.name].category, "projetos/automacao_codigo/plc")
             self.assertEqual(scan.file_summary[".stu PLC"], 1)
             self.assertEqual(scan.file_summary[".sta PLC"], 1)
@@ -246,7 +289,7 @@ class OrganizerTests(unittest.TestCase):
 
             self.assertFalse(result.errors)
             self.assertFalse(source.exists())
-            self.assertTrue((root / "projetos" / "automacao_codigo" / "python_scripts" / "bot.py").exists())
+            self.assertTrue((root / "projetos" / "automacao_codigo" / "python-scripts" / "bot.py").exists())
 
     def test_rollback_moves_returns_files_to_original_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
