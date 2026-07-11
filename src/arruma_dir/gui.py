@@ -249,24 +249,31 @@ class ArrumaDirApp(tk.Tk):
         actions.grid(row=0, column=2, sticky="nsew")
         actions.columnconfigure(0, weight=1)
 
-        self.scan_button = ttk.Button(actions, text="Gerar previa", command=self.scan, style="Primary.TButton")
-        self.scan_button.grid(row=0, column=0, sticky="ew")
+        self.organize_folder_button = ttk.Button(
+            actions,
+            text="Organizar pasta",
+            command=self.organize_folder,
+            style="Primary.TButton",
+        )
+        self.organize_folder_button.grid(row=0, column=0, sticky="ew")
+        self.scan_button = ttk.Button(actions, text="Gerar previa", command=self.scan)
+        self.scan_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.standardize_button = ttk.Button(actions, text="Padronizar nomes", command=self.standardize_names)
-        self.standardize_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.standardize_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.export_button = ttk.Button(actions, text="Exportar JSON", command=self.export_json)
-        self.export_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.export_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self.move_selected_button = ttk.Button(actions, text="Mover item selecionado", command=self.move_selected_duplicate)
-        self.move_selected_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.move_selected_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.move_duplicates_button = ttk.Button(actions, text="Mover duplicatas seguras", command=self.move_duplicates)
-        self.move_duplicates_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.move_duplicates_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
-        self.apply_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.apply_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         self.populate_base_button = ttk.Button(actions, text="Popular base", command=self.populate_base)
-        self.populate_base_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        self.populate_base_button.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         self.rollback_button = ttk.Button(actions, text="Voltar ultima acao", command=self.rollback_last_action)
-        self.rollback_button.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        self.rollback_button.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.stop_button = ttk.Button(actions, text="Parar Operacao", command=self.cancel_operation, style="Stop.TButton")
-        self.stop_button.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+        self.stop_button.grid(row=9, column=0, sticky="ew", pady=(8, 0))
         self.stop_button.grid_remove()
 
 
@@ -510,6 +517,7 @@ class ArrumaDirApp(tk.Tk):
         )
         normal = "normal"
         disabled = "disabled"
+        self.organize_folder_button.configure(state=disabled if self.busy else normal)
         self.scan_button.configure(state=disabled if self.busy else normal)
         self.standardize_button.configure(state=disabled if self.busy else normal)
         self.export_button.configure(state=normal if has_scan and not self.busy else disabled)
@@ -520,6 +528,15 @@ class ArrumaDirApp(tk.Tk):
         self.move_duplicates_button.configure(state=normal if has_duplicates and not self.busy else disabled)
         self.move_selected_button.configure(state=normal if has_duplicates and not self.busy else disabled)
         self.rollback_button.configure(state=normal if self.rollback_move_pairs and not self.busy else disabled)
+
+    def _has_organization_plan(self) -> bool:
+        document_plan = bool(
+            self.scan_result
+            and self.scan_result.plan
+            and not all(item.category == "padronizacao/nomes" for item in self.scan_result.plan)
+        )
+        project_plan = bool(self.project_report and self.project_report.organization)
+        return document_plan or project_plan
 
     def choose_directory(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.path_var.get() or str(Path.home()))
@@ -701,6 +718,20 @@ class ArrumaDirApp(tk.Tk):
             self.work_queue.put(("cancelled", str(exc) or "Reversao cancelada."))
         except Exception as exc:  # noqa: BLE001 - shown in GUI.
             self.work_queue.put(("error", exc))
+
+    def organize_folder(self) -> None:
+        if self._has_organization_plan():
+            self.apply_organization()
+            return
+
+        if self.scan_result and self.scan_result.plan:
+            messagebox.showinfo(
+                "Arruma Dir",
+                "A previa atual e de padronizacao de nomes. Use Aplicar plano para padronizar, ou Gere previa para organizar.",
+            )
+            return
+
+        self.scan()
 
     def scan(self) -> None:
         path = self.path_var.get().strip()
