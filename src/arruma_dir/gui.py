@@ -317,6 +317,10 @@ class ArrumaDirApp(tk.Tk):
         )
         notebook.add(self.plan_tree.master, text="Plano")
 
+        self.diagram_text = self._make_text_view(notebook)
+        notebook.add(self.diagram_text.master, text="Diagrama")
+        self._clear_diagram()
+
         self.duplicate_tree = self._make_tree(
             notebook,
             ("kind", "size", "hash", "file", "differences"),
@@ -461,6 +465,136 @@ class ArrumaDirApp(tk.Tk):
             tree.column(column, width=140 if column in {"action", "category", "size", "hash"} else 340)
         return tree
 
+    def _make_text_view(self, parent: ttk.Notebook) -> tk.Text:
+        frame = ttk.Frame(parent)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        text = tk.Text(frame, height=8, wrap="none", font=("Consolas", 9), bg="#ffffff", fg="#0f172a")
+        y_scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set, state="disabled")
+        text.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        return text
+
+    def _set_diagram_text(self, text: str) -> None:
+        self.diagram_text.configure(state="normal")
+        self.diagram_text.delete("1.0", "end")
+        self.diagram_text.insert("1.0", text.rstrip() + "\n")
+        self.diagram_text.configure(state="disabled")
+
+    def _clear_diagram(self) -> None:
+        self._set_diagram_text(
+            "Gere uma previa para ver o comparativo das pastas.\n\n"
+            "Destino atual (onde esta agora)\n"
+            "`-- aguardando previa\n\n"
+            "Destino futuro (onde vai ficar)\n"
+            "`-- aguardando previa"
+        )
+
+    def _build_plan_diagram(self, root: str, operations: list[tuple[str, str, str]]) -> str:
+        if not operations:
+            return (
+                "Comparativo da previa\n"
+                "Nenhuma movimentacao ou renomeacao planejada para esta pasta.\n\n"
+                "Destino atual (onde esta agora)\n"
+                "`-- sem mudancas\n\n"
+                "Destino futuro (onde vai ficar)\n"
+                "`-- sem mudancas"
+            )
+
+        action_counts: dict[str, int] = {}
+        for action, _source, _destination in operations:
+            action_counts[action] = action_counts.get(action, 0) + 1
+
+        action_summary = ", ".join(
+            f"{action} x{count}" if count > 1 else action for action, count in sorted(action_counts.items())
+        )
+        lines = [
+            "Comparativo da previa",
+            f"Raiz: {root}",
+            f"Itens planejados: {len(operations)}",
+            f"Acoes: {action_summary}",
+            "",
+        ]
+        lines.extend(
+            self._format_path_tree(
+                root,
+                [(source, action) for action, source, _destination in operations],
+                "Destino atual (onde esta agora)",
+            )
+        )
+        lines.append("")
+        lines.extend(
+            self._format_path_tree(
+                root,
+                [(destination, action) for action, _source, destination in operations],
+                "Destino futuro (onde vai ficar)",
+            )
+        )
+        return "\n".join(lines)
+
+    def _format_path_tree(self, root: str, entries: list[tuple[str, str]], title: str) -> list[str]:
+        max_entries = 250
+        root_path = Path(root).expanduser()
+        root_label = str(root_path)
+        tree: dict[str, dict] = {}
+        leaf_actions: dict[tuple[str, ...], dict[str, int]] = {}
+
+        for path_text, action in entries[:max_entries]:
+            parts = self._diagram_path_parts(root_path, path_text)
+            node = tree
+            for part in parts:
+                node = node.setdefault(part, {})
+            actions = leaf_actions.setdefault(parts, {})
+            actions[action] = actions.get(action, 0) + 1
+
+        lines = [title, root_label]
+        if not tree:
+            lines.append("`-- nenhum item planejado")
+            return lines
+
+        self._render_path_tree(tree, leaf_actions, (), "", lines)
+        hidden = len(entries) - max_entries
+        if hidden > 0:
+            lines.append(f"`-- ... mais {hidden} item(ns) omitidos no diagrama")
+        return lines
+
+    def _diagram_path_parts(self, root: Path, path_text: str) -> tuple[str, ...]:
+        path = Path(path_text).expanduser()
+        try:
+            relative = path.resolve(strict=False).relative_to(root.resolve(strict=False))
+            parts = tuple(part for part in relative.parts if part not in {"", "."})
+        except (OSError, ValueError):
+            parts = (str(path),)
+        if parts:
+            return parts
+        return (path.name or str(path),)
+
+    def _render_path_tree(
+        self,
+        tree: dict[str, dict],
+        leaf_actions: dict[tuple[str, ...], dict[str, int]],
+        path_prefix: tuple[str, ...],
+        indent: str,
+        lines: list[str],
+    ) -> None:
+        keys = sorted(tree)
+        for index, key in enumerate(keys):
+            is_last = index == len(keys) - 1
+            current_path = (*path_prefix, key)
+            label = key
+            if current_path in leaf_actions:
+                action_summary = ", ".join(
+                    f"{action} x{count}" if count > 1 else action
+                    for action, count in sorted(leaf_actions[current_path].items())
+                )
+                label = f"{label} [{action_summary}]"
+            lines.append(f"{indent}{'`-- ' if is_last else '|-- '}{label}")
+            child_indent = indent + ("    " if is_last else "|   ")
+            self._render_path_tree(tree[key], leaf_actions, current_path, child_indent, lines)
+
     def _on_mode_changed(self) -> None:
         self.scan_result = None
         self.project_report = None
@@ -477,6 +611,7 @@ class ArrumaDirApp(tk.Tk):
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
         self._clear_charts()
+        self._clear_diagram()
         self.duplicate_rows.clear()
         self._reset_summary()
         self._update_mode_controls()
@@ -758,6 +893,7 @@ class ArrumaDirApp(tk.Tk):
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
         self._clear_charts()
+        self._clear_diagram()
         self.duplicate_rows.clear()
         self._reset_summary()
 
@@ -875,6 +1011,7 @@ class ArrumaDirApp(tk.Tk):
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
         self._clear_charts()
+        self._clear_diagram()
         self._reset_summary()
         self.next_step_var.set("Revise a aba Plano. Se estiver correto, use Aplicar plano para renomear.")
         thread = threading.Thread(
@@ -1001,6 +1138,7 @@ class ArrumaDirApp(tk.Tk):
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
         self._clear_charts()
+        self._clear_diagram()
         self.duplicate_rows.clear()
         self._reset_summary()
         self.next_step_var.set("Popular base esta gerando uma previa. Revise o Plano antes de copiar.")
@@ -1321,6 +1459,12 @@ class ArrumaDirApp(tk.Tk):
         self.duplicate_rows.clear()
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
+        self._set_diagram_text(
+            self._build_plan_diagram(
+                result.root,
+                [(item.action, item.source, item.destination) for item in result.plan],
+            )
+        )
         for item in result.plan:
             self.plan_tree.insert(
                 "",
@@ -1396,6 +1540,11 @@ class ArrumaDirApp(tk.Tk):
         self.duplicate_rows.clear()
         self._clear_tree(self.plan_tree)
         self._clear_tree(self.duplicate_tree)
+        diagram_operations = [(item.action, item.source, item.destination) for item in report.organization]
+        diagram_operations.extend(
+            (item.decision, item.source, item.destination) for item in report.external_candidates
+        )
+        self._set_diagram_text(self._build_plan_diagram(report.root, diagram_operations))
 
         for item in report.organization:
             self.plan_tree.insert(
@@ -1485,6 +1634,9 @@ class ArrumaDirApp(tk.Tk):
             self._remember_rollback(root=self.active_root, mode=MODE_DOCUMENTS, label=label, moves=result.moved)
         else:
             self._clear_rollback()
+        self._set_diagram_text(
+            "Acao concluida. Gere uma nova previa para atualizar o comparativo de destino atual vs destino futuro."
+        )
         self._finish_busy()
 
     def _on_project_apply_done(self, result: ProjectApplyResult) -> None:
@@ -1509,6 +1661,9 @@ class ArrumaDirApp(tk.Tk):
             self._remember_rollback(root=self.active_root, mode=MODE_PROJECTS, label="Projetos/CAD", moves=move_pairs)
         else:
             self._clear_rollback()
+        self._set_diagram_text(
+            "Acao concluida. Gere uma nova previa para atualizar o comparativo de destino atual vs destino futuro."
+        )
         self._finish_busy()
 
     def _on_rollback_done(self, payload: tuple[str, str, str, list[tuple[str, str]], ApplyResult]) -> None:
@@ -1532,6 +1687,9 @@ class ArrumaDirApp(tk.Tk):
         else:
             self._clear_rollback()
             self.next_step_var.set("Reversao concluida. Gere uma nova previa para validar o estado atual da pasta.")
+        self._set_diagram_text(
+            "Reversao concluida. Gere uma nova previa para atualizar o comparativo de destino atual vs destino futuro."
+        )
         self._finish_busy()
 
     def _write_document_scan_log(self, result: ScanResult) -> None:

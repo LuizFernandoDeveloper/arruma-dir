@@ -129,6 +129,43 @@ Fluxo seguro:
 Escolher local -> Gerar previa -> Revisar plano -> Confirmar -> Aplicar
 ```
 
+Diagrama textual da melhoria:
+
+```text
+Arruma Dir
+|
+|-- Organizar pasta
+|   |
+|   |-- se ja existe previa de organizacao
+|   |   `-- confirmar -> aplicar plano revisado
+|   |
+|   `-- se ainda nao existe previa
+|       `-- gerar previa -> revisar Plano e Diagrama -> Aplicar plano
+|
+|-- Diagrama da previa
+|   |
+|   |-- Destino atual
+|   |   `-- mostra onde os arquivos e pastas estao agora
+|   |
+|   `-- Destino futuro
+|       `-- mostra onde ficarao apos aplicar o plano
+|
+|-- Padronizar nomes
+|   |
+|   |-- gera previa de renomeacao
+|   |-- usa nomes minusculos, ASCII e hifens
+|   |-- preserva padroes Ramtech/Macrotec/Opcao
+|   |-- preserva CAD protegido, salvo quando a opcao CAD for marcada
+|   |
+|   `-- se o nome padronizado ja existe como pasta
+|       `-- merge_dir: mesclar pastas em vez de criar duplicata
+|
+`-- Mover duplicatas seguras
+    |
+    |-- move somente duplicatas exatas com SHA-256 igual
+    `-- deixa possiveis duplicatas e itens sem hash para decisao manual
+```
+
 Se o local for alterado depois da previa, a interface obriga gerar uma nova previa antes de aplicar.
 
 ## Instalacao
