@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import stat
 from pathlib import Path
 
 from arruma_dir.organizer import (
@@ -189,6 +190,79 @@ class OrganizerTests(unittest.TestCase):
             for source_name, parts in cases.items():
                 self.assertFalse((root / source_name).exists())
                 self.assertTrue((root / Path(*parts)).exists())
+
+    def test_apply_plan_merge_dir_dry_run_keeps_source_and_destination_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "10-engenharia"
+            source.mkdir()
+            (source / "nota.txt").write_text("conteudo", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            result = apply_plan(scan.plan, root, dry_run=True)
+
+            self.assertFalse(result.errors)
+            self.assertTrue(source.exists())
+            self.assertTrue((source / "nota.txt").exists())
+            self.assertFalse((root / "recursos" / "engenharia").exists())
+            self.assertEqual(len(result.moved), 1)
+
+    def test_apply_plan_merge_dir_merges_nested_existing_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "10-engenharia"
+            nested = source / "Projetos Antigos"
+            target_nested = root / "recursos" / "engenharia" / "projetos-antigos"
+            nested.mkdir(parents=True)
+            target_nested.mkdir(parents=True)
+            (nested / "Novo Arquivo.txt").write_text("novo", encoding="utf-8")
+            (target_nested / "existente.txt").write_text("ok", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            result = apply_plan(scan.plan, root)
+
+            self.assertFalse(result.errors)
+            self.assertFalse(source.exists())
+            self.assertTrue((target_nested / "novo-arquivo.txt").exists())
+            self.assertTrue((target_nested / "existente.txt").exists())
+
+    def test_apply_plan_merge_dir_removes_readonly_windows_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "10-engenharia"
+            source.mkdir()
+            metadata = source / "desktop.ini"
+            metadata.write_text("[ViewState]", encoding="utf-8")
+            metadata.chmod(stat.S_IREAD)
+            (source / "nota.txt").write_text("conteudo", encoding="utf-8")
+
+            try:
+                scan = scan_directory(root, include_duplicates=False)
+                result = apply_plan(scan.plan, root)
+
+                self.assertFalse(result.errors)
+                self.assertFalse(source.exists())
+                self.assertTrue((root / "recursos" / "engenharia" / "nota.txt").exists())
+            finally:
+                if metadata.exists():
+                    metadata.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+    def test_apply_plan_reports_leftover_items_after_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "10-engenharia"
+            temp_dir = source / ".tmp-cache"
+            temp_dir.mkdir(parents=True)
+            (temp_dir / "lock.tmp").write_text("travado", encoding="utf-8")
+            (source / "nota.txt").write_text("conteudo", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            result = apply_plan(scan.plan, root)
+
+            self.assertFalse(result.errors)
+            self.assertTrue(source.exists())
+            self.assertTrue((root / "recursos" / "engenharia" / "nota.txt").exists())
+            self.assertTrue(any(".tmp-cache" in item for item in result.skipped))
 
     def test_plc_extensions_go_to_plc_project_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -501,7 +575,7 @@ class OrganizerTests(unittest.TestCase):
 
             self.assertTrue(any("nao foram hasheados" in item for item in duplicate_scan.skipped))
 
-    def test_exact_duplicate_without_copy_marker_is_kept_for_manual_decision(self) -> None:
+    def test_exact_duplicate_without_copy_marker_is_moved_when_hash_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             first = root / "docs"
@@ -514,12 +588,16 @@ class OrganizerTests(unittest.TestCase):
             duplicate_scan = find_duplicate_files(root)
             self.assertEqual(len(duplicate_scan.duplicates), 1)
             self.assertEqual(duplicate_scan.duplicates[0].kind, "exact")
+            keeper = Path(choose_duplicate_keeper(duplicate_scan.duplicates[0].files, root))
+            moved_source = first / "manual.pdf" if keeper == second / "manual.pdf" else second / "manual.pdf"
 
             result = move_duplicates_to_quarantine(root, duplicate_scan.duplicates)
-            self.assertEqual(result.moved, [])
-            self.assertEqual(len(result.skipped), 1)
-            self.assertTrue((first / "manual.pdf").exists())
-            self.assertTrue((second / "manual.pdf").exists())
+            self.assertFalse(result.errors)
+            self.assertEqual(result.skipped, [])
+            self.assertEqual(len(result.moved), 1)
+            self.assertTrue(keeper.exists())
+            self.assertFalse(moved_source.exists())
+            self.assertTrue(Path(result.moved[0][1]).exists())
 
 
 if __name__ == "__main__":

@@ -102,7 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="busca repetidos sem limite de tempo/tamanho, incluindo arquivos grandes",
     )
-    dedupe.add_argument("--all-exact", action="store_true", help="tambem move exatos sem marcador claro de copia")
+    dedupe.add_argument(
+        "--all-exact",
+        action="store_true",
+        help="compatibilidade: duplicatas exatas com SHA-256 igual ja sao movidas por padrao",
+    )
     dedupe.add_argument(
         "--include-cad",
         action="store_true",

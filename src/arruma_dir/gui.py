@@ -326,6 +326,9 @@ class ArrumaDirApp(tk.Tk):
             ("kind", "size", "hash", "file", "differences"),
             ("Tipo", "Bytes", "Hash", "Arquivo", "Diferencas"),
         )
+        self.duplicate_tree.tag_configure("moved", background="#dcfce7", foreground="#166534")
+        self.duplicate_tree.tag_configure("kept", background="#eff6ff", foreground="#1e40af")
+        self.duplicate_tree.tag_configure("warning", background="#fef3c7", foreground="#92400e")
         notebook.add(self.duplicate_tree.master, text="Repetidos")
 
         summary_chart_frame = ttk.Frame(notebook)
@@ -487,22 +490,28 @@ class ArrumaDirApp(tk.Tk):
     def _clear_diagram(self) -> None:
         self._set_diagram_text(
             "Gere uma previa para ver o comparativo das pastas.\n\n"
-            "Destino atual (onde esta agora)\n"
-            "`-- aguardando previa\n\n"
-            "Destino futuro (onde vai ficar)\n"
-            "`-- aguardando previa"
+            + "\n".join(
+                self._format_side_by_side(
+                    ["Destino atual (onde esta agora)", "`-- aguardando previa"],
+                    ["Destino futuro (onde vai ficar)", "`-- aguardando previa"],
+                )
+            )
         )
 
     def _build_plan_diagram(self, root: str, operations: list[tuple[str, str, str]]) -> str:
         if not operations:
-            return (
-                "Comparativo da previa\n"
-                "Nenhuma movimentacao ou renomeacao planejada para esta pasta.\n\n"
-                "Destino atual (onde esta agora)\n"
-                "`-- sem mudancas\n\n"
-                "Destino futuro (onde vai ficar)\n"
-                "`-- sem mudancas"
+            lines = [
+                "Comparativo da previa",
+                "Nenhuma movimentacao ou renomeacao planejada para esta pasta.",
+                "",
+            ]
+            lines.extend(
+                self._format_side_by_side(
+                    ["Destino atual (onde esta agora)", "`-- sem mudancas"],
+                    ["Destino futuro (onde vai ficar)", "`-- sem mudancas"],
+                )
             )
+            return "\n".join(lines)
 
         action_counts: dict[str, int] = {}
         for action, _source, _destination in operations:
@@ -522,22 +531,29 @@ class ArrumaDirApp(tk.Tk):
                 "Nota: merge_dir move o conteudo para a pasta padrao e remove a pasta antiga quando ela fica vazia."
             )
         lines.append("")
-        lines.extend(
-            self._format_path_tree(
-                root,
-                [(source, action) for action, source, _destination in operations],
-                "Destino atual (onde esta agora)",
-            )
+        current_tree = self._format_path_tree(
+            root,
+            [(source, action) for action, source, _destination in operations],
+            "Destino atual (onde esta agora)",
         )
-        lines.append("")
-        lines.extend(
-            self._format_path_tree(
-                root,
-                [(destination, action) for action, _source, destination in operations],
-                "Destino futuro (onde vai ficar)",
-            )
+        future_tree = self._format_path_tree(
+            root,
+            [(destination, action) for action, _source, destination in operations],
+            "Destino futuro (onde vai ficar)",
         )
+        lines.extend(self._format_side_by_side(current_tree, future_tree))
         return "\n".join(lines)
+
+    def _format_side_by_side(self, left: list[str], right: list[str]) -> list[str]:
+        left_width = max((len(line) for line in left), default=0)
+        left_width = max(left_width, 36)
+        height = max(len(left), len(right))
+        rows: list[str] = []
+        for index in range(height):
+            left_line = left[index] if index < len(left) else ""
+            right_line = right[index] if index < len(right) else ""
+            rows.append(f"{left_line:<{left_width}}    {right_line}")
+        return rows
 
     def _format_path_tree(self, root: str, entries: list[tuple[str, str]], title: str) -> list[str]:
         max_entries = 250
@@ -1199,6 +1215,7 @@ class ArrumaDirApp(tk.Tk):
                 "Possiveis duplicatas ficam no lugar.",
             ):
                 return
+            self._mark_duplicate_rows_pending()
             self._set_busy("Movendo duplicatas de projetos...")
             progress_callback = self._create_progress_callback()
             thread = threading.Thread(
@@ -1214,10 +1231,11 @@ class ArrumaDirApp(tk.Tk):
             return
         if not self._confirm_action(
             "Mover duplicatas",
-            "Mover somente copias exatamente iguais com marcador de copia para _duplicados?\n\n"
-            "Possiveis duplicatas, itens sem hash e arquivos sem marcador claro ficam no lugar para decisao manual.",
+            "Mover duplicatas exatas com mesmo SHA-256 para _duplicados, mantendo uma principal?\n\n"
+            "Possiveis duplicatas, itens sem hash e tamanhos diferentes ficam no lugar para decisao manual.",
         ):
             return
+        self._mark_duplicate_rows_pending()
         self._set_busy("Movendo repetidos...")
         progress_callback = self._create_progress_callback()
         thread = threading.Thread(target=self._dedupe_worker, args=(self.cancel_event, progress_callback), daemon=True)
@@ -1262,6 +1280,7 @@ class ArrumaDirApp(tk.Tk):
                 code="MOVER",
             ):
                 return
+            self._mark_selected_duplicate_pending(selected[0])
             self._set_busy("Movendo duplicata selecionada...")
             progress_callback = self._create_progress_callback()
             thread = threading.Thread(
@@ -1295,6 +1314,7 @@ class ArrumaDirApp(tk.Tk):
         if not self._confirm_action("Mover selecionado", message, code="MOVER"):
             return
 
+        self._mark_selected_duplicate_pending(selected[0])
         self._set_busy("Movendo item selecionado...")
         progress_callback = self._create_progress_callback()
         thread = threading.Thread(
@@ -1475,7 +1495,7 @@ class ArrumaDirApp(tk.Tk):
                 "end",
                 values=(item.action, item.category, item.source, item.destination, item.reason),
             )
-        for group in result.duplicates:
+        for group_index, group in enumerate(result.duplicates):
             keeper = choose_duplicate_keeper(group.files, result.root) if group.kind == "exact" else ""
             differences = "; ".join(group.differences) if group.differences else group.reason
             if group.kind == "exact" and not is_batch_safe_duplicate_group(group):
@@ -1498,6 +1518,7 @@ class ArrumaDirApp(tk.Tk):
                     "file": file_path,
                     "kind": group.kind,
                     "role": marker,
+                    "group_id": f"document:{group_index}",
                     "differences": differences,
                 }
         stats = result.stats
@@ -1568,7 +1589,7 @@ class ArrumaDirApp(tk.Tk):
                     f"score {item.score}: {', '.join(item.reasons)}",
                 ),
             )
-        for item in report.duplicates:
+        for group_index, item in enumerate(report.duplicates):
             item_id = self.duplicate_tree.insert(
                 "",
                 "end",
@@ -1585,6 +1606,7 @@ class ArrumaDirApp(tk.Tk):
                 "file": item.source,
                 "kind": "exact",
                 "role": "repetido",
+                "group_id": f"project:{group_index}",
                 "operation": item,
             }
 
@@ -1634,6 +1656,8 @@ class ArrumaDirApp(tk.Tk):
         for error in result.errors:
             self._append_log(f"Erro: {error}")
         self._write_document_apply_log(result, label)
+        if event in {"dedupe_done", "selected_duplicate_done"}:
+            self._remove_moved_duplicate_rows([source for source, _destination in result.moved])
         if result.moved and self.active_root:
             self._remember_rollback(root=self.active_root, mode=MODE_DOCUMENTS, label=label, moves=result.moved)
         else:
@@ -1661,6 +1685,8 @@ class ArrumaDirApp(tk.Tk):
         for item in errors:
             self._append_log(f"Erro: {item}")
         self._write_project_apply_log(result)
+        if move_pairs:
+            self._remove_moved_duplicate_rows([source for source, _destination in move_pairs])
         if move_pairs and self.active_root:
             self._remember_rollback(root=self.active_root, mode=MODE_PROJECTS, label="Projetos/CAD", moves=move_pairs)
         else:
@@ -1874,6 +1900,97 @@ class ArrumaDirApp(tk.Tk):
     def _clear_tree(self, tree: ttk.Treeview) -> None:
         for item in tree.get_children():
             tree.delete(item)
+
+    def _mark_duplicate_rows_pending(self) -> None:
+        for item_id, row in self.duplicate_rows.items():
+            if not self.duplicate_tree.exists(item_id):
+                continue
+            if row.get("kind") == "exact" and row.get("role") == "repetido":
+                self.duplicate_tree.item(item_id, tags=("warning",))
+            elif row.get("kind") == "exact" and row.get("role") == "principal":
+                self.duplicate_tree.item(item_id, tags=("kept",))
+
+    def _mark_selected_duplicate_pending(self, item_id: str) -> None:
+        if self.duplicate_tree.exists(item_id):
+            self.duplicate_tree.item(item_id, tags=("warning",))
+
+    def _remove_moved_duplicate_rows(self, moved_sources: list[str]) -> None:
+        moved = set(moved_sources)
+        if not moved:
+            self._mark_remaining_duplicate_rows()
+            return
+
+        group_ids_to_remove: set[str] = set()
+        item_ids_to_remove: set[str] = set()
+        repeated_by_group: dict[str, set[str]] = {}
+        for row in self.duplicate_rows.values():
+            if row.get("kind") != "exact" or not row.get("group_id"):
+                continue
+            if row.get("role") != "principal":
+                repeated_by_group.setdefault(str(row["group_id"]), set()).add(str(row.get("file")))
+
+        for group_id, repeated_files in repeated_by_group.items():
+            if repeated_files and repeated_files.issubset(moved):
+                group_ids_to_remove.add(group_id)
+
+        for item_id, row in self.duplicate_rows.items():
+            if str(row.get("file")) not in moved:
+                continue
+            if row.get("kind") == "exact" and row.get("group_id") in group_ids_to_remove:
+                continue
+            else:
+                item_ids_to_remove.add(item_id)
+
+        for item_id, row in self.duplicate_rows.items():
+            if row.get("group_id") in group_ids_to_remove:
+                item_ids_to_remove.add(item_id)
+
+        for item_id in item_ids_to_remove:
+            if self.duplicate_tree.exists(item_id):
+                row = self.duplicate_rows.get(item_id, {})
+                tag = "kept" if row.get("role") == "principal" else "moved"
+                self.duplicate_tree.item(item_id, tags=(tag,))
+
+        self.after(900, lambda ids=list(item_ids_to_remove), moved=list(moved): self._delete_moved_duplicate_rows(ids, moved))
+
+    def _delete_moved_duplicate_rows(self, item_ids_to_remove: list[str], moved_sources: list[str]) -> None:
+        for item_id in item_ids_to_remove:
+            if self.duplicate_tree.exists(item_id):
+                self.duplicate_tree.delete(item_id)
+            self.duplicate_rows.pop(item_id, None)
+
+        if self.scan_result:
+            moved = set(moved_sources)
+            self.scan_result.duplicates = [
+                group for group in self.scan_result.duplicates if not any(file_path in moved for file_path in group.files)
+            ]
+        if self.project_report:
+            moved = set(moved_sources)
+            self.project_report.duplicates = [
+                item for item in self.project_report.duplicates if item.source not in moved
+            ]
+        self._refresh_duplicate_summary()
+
+    def _mark_remaining_duplicate_rows(self) -> None:
+        for item_id, row in self.duplicate_rows.items():
+            if not self.duplicate_tree.exists(item_id):
+                continue
+            if row.get("kind") == "exact":
+                self.duplicate_tree.item(item_id, tags=("kept",))
+
+    def _refresh_duplicate_summary(self) -> None:
+        exact_groups = {
+            row.get("group_id")
+            for row in self.duplicate_rows.values()
+            if row.get("kind") == "exact" and row.get("group_id")
+        }
+        possible_groups = {
+            row.get("group_id")
+            for row in self.duplicate_rows.values()
+            if row.get("kind") == "possible" and row.get("group_id")
+        }
+        self.summary_vars["duplicates"].set(str(len(exact_groups)))
+        self.summary_vars["possible"].set(str(len(possible_groups)))
 
     def _set_busy(self, message: str, *, indeterminate: bool = False, detail: str = "") -> None:
         self.busy = True

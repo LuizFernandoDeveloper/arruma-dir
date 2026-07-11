@@ -1341,9 +1341,17 @@ def apply_plan(
                 if not source.is_dir():
                     result.skipped.append(f"nao e pasta: {source}")
                     continue
-                moves = _merge_directory(source, destination, dry_run=dry_run, cancel_event=cancel_event)
+                cleanup_messages: list[str] = []
+                moves = _merge_directory(
+                    source,
+                    destination,
+                    dry_run=dry_run,
+                    cancel_event=cancel_event,
+                    cleanup_messages=cleanup_messages,
+                )
                 result.moved.extend(moves)
-                if not dry_run and source.exists():
+                result.skipped.extend(cleanup_messages)
+                if not dry_run and source.exists() and not cleanup_messages:
                     result.skipped.append(f"pasta original mantida porque ainda contem itens protegidos: {source}")
             elif item.action in {"move", "rename"}:
                 target = unique_path(destination)
@@ -1404,7 +1412,12 @@ def rollback_moves(
 
 
 def _merge_directory(
-    source: Path, destination: Path, *, dry_run: bool = False, cancel_event: threading.Event | None = None
+    source: Path,
+    destination: Path,
+    *,
+    dry_run: bool = False,
+    cancel_event: threading.Event | None = None,
+    cleanup_messages: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     moves: list[tuple[str, str]] = []
     if not dry_run:
@@ -1419,7 +1432,15 @@ def _merge_directory(
             continue
         target = destination / clean_leaf_name(child, compat_names=True)
         if child.is_dir() and target.exists() and target.is_dir():
-            moves.extend(_merge_directory(child, target, dry_run=dry_run, cancel_event=cancel_event))
+            moves.extend(
+                _merge_directory(
+                    child,
+                    target,
+                    dry_run=dry_run,
+                    cancel_event=cancel_event,
+                    cleanup_messages=cleanup_messages,
+                )
+            )
             continue
         target = unique_path(target)
         if dry_run:
@@ -1429,11 +1450,39 @@ def _merge_directory(
         moves.append((str(child), str(target)))
 
     if not dry_run:
-        try:
-            source.rmdir()
-        except OSError:
-            pass
+        message = _remove_empty_merge_source(source)
+        if message and cleanup_messages is not None:
+            cleanup_messages.append(message)
     return moves
+
+
+def _remove_empty_merge_source(source: Path) -> str | None:
+    if not source.exists():
+        return None
+    try:
+        for child in sorted(source.iterdir(), key=lambda item: item.name.lower()):
+            if should_skip_name(child.name):
+                _discard_merge_skip_item(child)
+    except OSError as exc:
+        return f"nao foi possivel listar sobras da pasta original {source}: {exc}"
+
+    if not source.exists():
+        return None
+    try:
+        _make_path_removable(source)
+        source.rmdir()
+        return None
+    except OSError as exc:
+        try:
+            leftovers = [child.name for child in sorted(source.iterdir(), key=lambda item: item.name.lower())]
+        except OSError as list_exc:
+            return f"nao foi possivel remover pasta original {source}: {exc}; falha ao listar sobras: {list_exc}"
+        if leftovers:
+            shown = ", ".join(leftovers[:8])
+            if len(leftovers) > 8:
+                shown = f"{shown}, ... (+{len(leftovers) - 8})"
+            return f"pasta original mantida porque ainda contem {shown}: {source}"
+        return f"nao foi possivel remover pasta original vazia {source}: {exc}"
 
 
 def _discard_merge_skip_item(path: Path) -> None:
@@ -1443,11 +1492,27 @@ def _discard_merge_skip_item(path: Path) -> None:
         return
     try:
         if path.is_dir():
+            _make_path_removable(path)
             path.rmdir()
             return
-        path.chmod(stat.S_IWRITE)
+        _make_path_removable(path)
         path.unlink()
     except OSError:
+        pass
+
+
+def _make_path_removable(path: Path) -> None:
+    try:
+        path.chmod(stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+    except OSError:
+        pass
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x80)
+    except (AttributeError, OSError, ValueError):
         pass
 
 
@@ -1673,7 +1738,7 @@ def looks_like_copy_name(path: Path) -> bool:
 
 
 def is_batch_safe_duplicate_group(group: DuplicateGroup) -> bool:
-    return group.kind == "exact" and any(looks_like_copy_name(Path(file_path)) for file_path in group.files)
+    return group.kind == "exact" and bool(group.sha256) and len(group.files) > 1
 
 
 def find_possible_duplicate_groups(
@@ -1849,7 +1914,7 @@ def move_duplicates_to_quarantine(
             result.skipped.append(f"mantido para decisao: {group.reason} ({len(group.files)} arquivos)")
             continue
         if not include_manual_exact and not is_batch_safe_duplicate_group(group):
-            result.skipped.append(f"exato sem marcador de copia, mantido para decisao: {len(group.files)} arquivos")
+            result.skipped.append(f"exato sem SHA-256 confiavel, mantido para decisao: {len(group.files)} arquivos")
             continue
         keeper = choose_duplicate_keeper(group.files, root_path)
         for file_path in group.files:
