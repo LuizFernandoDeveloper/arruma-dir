@@ -14,12 +14,13 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 CHUNK_SIZE = 1024 * 1024
 INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[-_. ]+\s*(?=[^\d\s])")
+ORDERED_DIRECTORY_RE = re.compile(r"^\s*(\d{1,3})\s*[-_. ]+\s*(?=[^\d\s])")
 SPACES_RE = re.compile(r"\s+")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 BUSINESS_PROJECT_CODE_RE = re.compile(r"\b[CPRS]\s*-?\s*\d{4,7}(?:[-_ ]?\d{1,4})?\b", re.IGNORECASE)
@@ -245,6 +246,13 @@ class Topic:
     directory: str
     keywords: tuple[str, ...] = ()
     extensions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirectoryProfile:
+    area_root: Path = Path("areas")
+    area_children: dict[str, Path] = field(default_factory=dict)
+    entry_root: Path = Path("entrada")
 
 
 DEFAULT_TOPICS: tuple[Topic, ...] = (
@@ -577,6 +585,8 @@ STANDARD_DIRECTORY_PATHS = {
     for topic in DEFAULT_TOPICS
     for index in range(1, len(Path(topic.directory).parts) + 1)
 } | {Path(directory) for directory in PRODUCTIVITY_DIRS}
+AREA_ROOT_NAMES = {"areas", "minhas areas", "minha areas", "minhas areas pessoais"}
+AREA_DIRECTORY_KEYS: set[str] = set()
 
 
 @dataclass
@@ -674,6 +684,13 @@ def canonical_text(value: str) -> str:
     return SPACES_RE.sub(" ", value).strip()
 
 
+AREA_DIRECTORY_KEYS = {
+    canonical_text(Path(topic.directory).parts[1])
+    for topic in DEFAULT_TOPICS
+    if len(Path(topic.directory).parts) > 1 and Path(topic.directory).parts[0] == "areas"
+}
+
+
 def strip_leading_number(value: str) -> str:
     cleaned = LEADING_NUMBER_RE.sub("", value).strip()
     return cleaned or value.strip()
@@ -705,13 +722,24 @@ def clean_leaf_name(path: Path, compat_names: bool = False) -> str:
     stem = strip_leading_number(stem)
 
     if compat_names:
-        clean_stem = slug_name(stem)
+        clean_stem = avoid_reserved_name(slug_name(stem))
         clean_suffix = suffix.lower()
     else:
         clean_stem = avoid_reserved_name(safe_display_name(stem))
         clean_suffix = suffix
 
     return f"{clean_stem}{clean_suffix}" if clean_suffix else clean_stem
+
+
+def clean_standardized_leaf_name(path: Path) -> str:
+    if path.is_dir():
+        match = ORDERED_DIRECTORY_RE.match(path.name)
+        if match:
+            number = int(match.group(1))
+            rest = ORDERED_DIRECTORY_RE.sub("", path.name).strip()
+            clean_rest = avoid_reserved_name(slug_name(rest))
+            return f"{number:03d}-{clean_rest}"
+    return clean_leaf_name(path, compat_names=True)
 
 
 def has_business_standard_context(path: Path) -> bool:
@@ -745,11 +773,92 @@ def is_generated_or_topic_dir(path: Path) -> bool:
 
 
 def is_standard_organization_dir(root: Path, path: Path) -> bool:
+    return is_standard_organization_dir_for_profile(root, path, learn_directory_profile(root))
+
+
+def is_standard_organization_dir_for_profile(root: Path, path: Path, profile: DirectoryProfile) -> bool:
     try:
         relative = path.relative_to(root)
     except ValueError:
         return False
-    return relative in STANDARD_DIRECTORY_PATHS
+    return relative in standard_directory_paths_for_profile(profile)
+
+
+def area_child_key(path_name: str) -> str:
+    return canonical_text(strip_leading_number(path_name))
+
+
+def learn_directory_profile(root: Path) -> DirectoryProfile:
+    area_root = Path("areas")
+    area_children: dict[str, Path] = {}
+    best_score = -1
+
+    try:
+        top_level = [item for item in root.iterdir() if item.is_dir()]
+    except OSError:
+        top_level = []
+
+    for candidate in sorted(top_level, key=lambda item: item.name.lower()):
+        if is_internal_generated_dir(candidate) or is_protected_app_dir(candidate):
+            continue
+        candidate_name = canonical_text(candidate.name)
+        mapped_children: dict[str, Path] = {}
+        try:
+            children = [item for item in candidate.iterdir() if item.is_dir()]
+        except OSError:
+            children = []
+        for child in children:
+            key = area_child_key(child.name)
+            if key in AREA_DIRECTORY_KEYS:
+                mapped_children[key] = Path(candidate.name) / child.name
+        score = len(mapped_children)
+        if candidate_name in AREA_ROOT_NAMES:
+            score += 10
+        if score > best_score and (mapped_children or candidate_name in AREA_ROOT_NAMES):
+            best_score = score
+            area_root = Path(candidate.name)
+            area_children = mapped_children
+
+    entry_root = Path("entrada")
+    if (root / "entrada").is_dir():
+        entry_root = Path("entrada")
+    elif (root / "_entrada").is_dir():
+        entry_root = Path("_entrada")
+
+    return DirectoryProfile(area_root=area_root, area_children=area_children, entry_root=entry_root)
+
+
+def topic_directory_for_profile(topic: Topic, profile: DirectoryProfile) -> Path:
+    parts = Path(topic.directory).parts
+    if not parts:
+        return Path(topic.directory)
+
+    if parts[0] == "areas" and len(parts) > 1:
+        key = canonical_text(parts[1])
+        area_base = profile.area_children.get(key, profile.area_root / parts[1])
+        if len(parts) == 2:
+            return area_base
+        return area_base / Path(*parts[2:])
+
+    if parts[0] == "entrada":
+        if len(parts) == 1:
+            return profile.entry_root
+        return profile.entry_root / Path(*parts[1:])
+
+    return Path(topic.directory)
+
+
+def standard_directory_paths_for_profile(profile: DirectoryProfile) -> set[Path]:
+    paths = set(STANDARD_DIRECTORY_PATHS)
+    paths.add(profile.area_root)
+    paths.add(profile.entry_root)
+    paths.add(profile.entry_root / "revisar")
+    for topic in DEFAULT_TOPICS:
+        directory = topic_directory_for_profile(topic, profile)
+        parts = directory.parts
+        for index in range(1, len(parts) + 1):
+            paths.add(Path(*parts[:index]))
+    return paths
 
 
 def is_repository_root(path: Path) -> bool:
@@ -1059,6 +1168,14 @@ def ensure_inside(root: Path, target: Path) -> None:
         raise ValueError(f"Destino fora da raiz: {target}") from exc
 
 
+def same_filesystem_entry(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def differs_only_by_leaf_spelling(source: Path, destination: Path) -> bool:
+    return same_filesystem_entry(source, destination) and source.name != destination.name
+
+
 def unique_path(target: Path) -> Path:
     if not target.exists():
         return target
@@ -1072,6 +1189,27 @@ def unique_path(target: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def temporary_rename_path(source: Path) -> Path:
+    safe_stem = slug_name(source.name)
+    for counter in range(1, 1000):
+        candidate = source.parent / f".arruma-dir-renomeando-{os.getpid()}-{counter}-{safe_stem}"
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"nao foi possivel criar nome temporario para renomear {source}")
+
+
+def rename_leaf_spelling(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = temporary_rename_path(source)
+    source.rename(temporary)
+    try:
+        temporary.rename(destination)
+    except Exception:
+        if temporary.exists() and not source.exists():
+            temporary.rename(source)
+        raise
 
 
 def summarize_file(path: Path, root: Path, file_summary: dict[str, int], directory_summary: dict[str, int]) -> None:
@@ -1104,6 +1242,7 @@ def scan_directory(
         raise NotADirectoryError(root_path)
 
     result = ScanResult(root=str(root_path), generated_at=utc_now())
+    profile = learn_directory_profile(root_path)
 
     if is_cancelled(cancel_event):
         result.skipped.append("operacao cancelada pelo usuario antes da listagem")
@@ -1125,6 +1264,9 @@ def scan_directory(
             continue
         if is_internal_generated_dir(entry):
             continue
+        if is_standard_organization_dir_for_profile(root_path, entry, profile):
+            result.skipped.append(str(entry))
+            continue
         if is_generated_or_topic_dir(entry):
             result.skipped.append(str(entry))
             continue
@@ -1137,7 +1279,8 @@ def scan_directory(
 
         try:
             topic, reason = classify_entry(entry)
-            target_dir = root_path / topic.directory
+            topic_directory = topic_directory_for_profile(topic, profile)
+            target_dir = root_path / topic_directory
             is_dir = entry.is_dir()
             if is_dir and cleaned_name_matches_topic(entry, topic, compat_names=compat_names):
                 action = "merge_dir"
@@ -1157,7 +1300,7 @@ def scan_directory(
                     action=action,
                     source=str(entry),
                     destination=str(destination),
-                    category=topic.directory,
+                    category=topic_directory.as_posix(),
                     reason=reason,
                     is_directory=is_dir,
                     size=size,
@@ -1214,6 +1357,7 @@ def scan_name_standardization(
         raise NotADirectoryError(root_path)
 
     result = ScanResult(root=str(root_path), generated_at=utc_now())
+    profile = learn_directory_profile(root_path)
     entries: list[Path] = []
 
     for dirpath, dirnames, filenames in os.walk(root_path):
@@ -1227,6 +1371,9 @@ def scan_name_standardization(
             child = current / dirname
             if should_skip_standardization_dir(dirname) or is_internal_generated_dir(child) or is_protected_app_dir(child):
                 continue
+            if is_standard_organization_dir_for_profile(root_path, child, profile):
+                filtered_dirs.append(dirname)
+                continue
             if has_business_standard_context(child):
                 result.skipped.append(f"padrao Ramtech/Opcao preservado: {child}")
                 continue
@@ -1235,12 +1382,9 @@ def scan_name_standardization(
                 continue
             if is_repository_root(child):
                 result.skipped.append(f"conteudo de projeto/repositorio preservado: {child}")
-                if not is_standard_organization_dir(root_path, child):
-                    entries.append(child)
+                entries.append(child)
                 continue
             filtered_dirs.append(dirname)
-            if is_standard_organization_dir(root_path, child):
-                continue
             entries.append(child)
         dirnames[:] = filtered_dirs
 
@@ -1262,12 +1406,13 @@ def scan_name_standardization(
         if is_cancelled(cancel_event):
             result.skipped.append("operacao cancelada pelo usuario durante a montagem da previa")
             break
-        target = entry.parent / clean_leaf_name(entry, compat_names=True)
-        if entry.resolve(strict=False) == target.resolve(strict=False):
+        target = entry.parent / clean_standardized_leaf_name(entry)
+        same_entry = same_filesystem_entry(entry, target)
+        if same_entry and entry.name == target.name:
             continue
         action = "rename"
         reason = "padrao de nome: minusculas, ASCII e hifens"
-        if entry.is_dir() and target.exists() and target.is_dir():
+        if entry.is_dir() and not same_entry and target.exists() and target.is_dir():
             action = "merge_dir"
             reason = "padrao de nome: pasta destino ja existe; mesclar para evitar duplicar"
         result.plan.append(
@@ -1354,12 +1499,16 @@ def apply_plan(
                 if not dry_run and source.exists() and not cleanup_messages:
                     result.skipped.append(f"pasta original mantida porque ainda contem itens protegidos: {source}")
             elif item.action in {"move", "rename"}:
-                target = unique_path(destination)
+                leaf_spelling_only = differs_only_by_leaf_spelling(source, destination)
+                target = destination if leaf_spelling_only else unique_path(destination)
                 if dry_run:
                     result.moved.append((str(source), str(target)))
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(target))
+                if leaf_spelling_only:
+                    rename_leaf_spelling(source, target)
+                else:
+                    shutil.move(str(source), str(target))
                 result.moved.append((str(source), str(target)))
             else:
                 result.skipped.append(f"acao desconhecida: {item.action} em {source}")
@@ -1395,6 +1544,13 @@ def rollback_moves(
             ensure_inside(root_path, current)
             if not current.exists():
                 result.skipped.append(f"nao existe para voltar: {current}")
+                continue
+            if differs_only_by_leaf_spelling(current, original):
+                if dry_run:
+                    result.moved.append((str(current), str(original)))
+                    continue
+                rename_leaf_spelling(current, original)
+                result.moved.append((str(current), str(original)))
                 continue
             if original.exists():
                 result.errors.append(f"destino original ocupado: {original}")
@@ -1870,7 +2026,10 @@ def quarantine_name(root: Path, path: Path) -> Path:
         parts = relative.parts
     except ValueError:
         parts = (path.name,)
-    safe_parts = [slug_name(part) for part in parts]
+    safe_parts = [
+        clean_leaf_name(path, compat_names=True) if path.is_file() and index == len(parts) - 1 else slug_name(part)
+        for index, part in enumerate(parts)
+    ]
     return Path(*safe_parts)
 
 

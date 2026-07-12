@@ -5,9 +5,16 @@ import unittest
 from pathlib import Path
 
 from arruma_dir.project_organizer import (
+    DuplicateOperation,
+    MoveOperation,
+    ProjectReport,
     apply_report,
     build_organization_plan,
     create_opcao_template,
+    duplicate_quarantine_target,
+    execute_copy,
+    execute_merge_dir,
+    execute_move,
     scan_projects,
 )
 
@@ -73,6 +80,136 @@ class ProjectOrganizerTests(unittest.TestCase):
             source, destination = result["moved_pairs"][0]
             self.assertFalse(Path(source).exists())
             self.assertTrue(Path(destination).exists())
+
+    def test_project_merge_dir_recursively_merges_existing_canonical_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "Ramtech"
+            source_dwg = source_root / "Projetos" / "P20051-0001 - CLIENTE" / "3- Projeto Eletrico (DWG)"
+            target_dwg = root / "projetos" / "Ramtech" / "Projetos" / "P20051-0001 - CLIENTE" / "3- Projeto Eletrico (DWG)"
+            source_dwg.mkdir(parents=True)
+            target_dwg.mkdir(parents=True)
+            (source_dwg / "P20051-PAINEL-NOVO.dwg").write_bytes(b"novo")
+            (target_dwg / "P20051-EXISTENTE.dwg").write_bytes(b"existente")
+
+            report = scan_projects(root, no_hash=True)
+            merge_items = [item for item in report.organization if item.action == "merge_dir"]
+
+            self.assertEqual(len(merge_items), 1)
+            result = apply_report(report, organize=True, duplicates=False, import_external=False, yes=True)
+
+            self.assertEqual(result["errors"], [])
+            self.assertFalse(source_root.exists())
+            self.assertTrue((target_dwg / "P20051-PAINEL-NOVO.dwg").exists())
+            self.assertTrue((target_dwg / "P20051-EXISTENTE.dwg").exists())
+            self.assertFalse((root / "projetos" / "Ramtech" / "Projetos (2)").exists())
+
+    def test_project_merge_dir_dry_run_reports_nested_targets_without_touching_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "Ramtech"
+            destination = root / "projetos" / "Ramtech"
+            source_nested = source / "Projetos" / "P20051-0001 - CLIENTE"
+            destination_nested = destination / "Projetos" / "P20051-0001 - CLIENTE"
+            source_nested.mkdir(parents=True)
+            destination_nested.mkdir(parents=True)
+            source_file = source_nested / "novo.pdf"
+            source_file.write_bytes(b"novo")
+            (destination_nested / "existente.pdf").write_bytes(b"existente")
+
+            moved = execute_merge_dir(source, destination, dry_run=True)
+
+            self.assertEqual(moved, [(str(source_file), str(destination_nested / "novo.pdf"))])
+            self.assertTrue(source_file.exists())
+            self.assertFalse((destination_nested / "novo.pdf").exists())
+
+    def test_project_merge_dir_refuses_destination_inside_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "Ramtech"
+            destination = source / "projetos" / "Ramtech"
+            source.mkdir()
+
+            with self.assertRaises(ValueError):
+                execute_merge_dir(source, destination, dry_run=True)
+
+    def test_project_apply_rejects_organization_source_outside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(tmp)
+            outside = Path(outside_tmp) / "fora.txt"
+            outside.write_text("nao mover", encoding="utf-8")
+            report = ProjectReport(
+                root=str(root),
+                generated_at="agora",
+                organization=[
+                    MoveOperation("move", str(outside), str(root / "projetos" / "fora.txt"), "relatorio adulterado")
+                ],
+            )
+
+            result = apply_report(report, organize=True, duplicates=False, import_external=False, yes=True)
+
+            self.assertEqual(result["moved"], [])
+            self.assertTrue(result["errors"])
+            self.assertTrue(outside.exists())
+            self.assertFalse((root / "projetos" / "fora.txt").exists())
+
+    def test_project_apply_rejects_duplicate_source_outside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(tmp)
+            outside = Path(outside_tmp) / "duplicado.pdf"
+            outside.write_bytes(b"same")
+            report = ProjectReport(
+                root=str(root),
+                generated_at="agora",
+                duplicates=[
+                    DuplicateOperation(
+                        source=str(outside),
+                        destination=str(root / "_arruma_projetos" / "duplicados" / "duplicado.pdf"),
+                        keeper=str(root / "original.pdf"),
+                        sha256="a" * 64,
+                        size=4,
+                        reason="relatorio adulterado",
+                    )
+                ],
+            )
+
+            result = apply_report(report, organize=False, duplicates=True, import_external=False, yes=True)
+
+            self.assertEqual(result["moved"], [])
+            self.assertTrue(result["errors"])
+            self.assertTrue(outside.exists())
+
+    def test_project_move_and_copy_dry_run_report_unique_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            move_source = root / "novo.pdf"
+            copy_source = root / "manual.pdf"
+            existing_move = root / "destino.pdf"
+            existing_copy = root / "copia.pdf"
+            move_source.write_bytes(b"move")
+            copy_source.write_bytes(b"copy")
+            existing_move.write_bytes(b"existe")
+            existing_copy.write_bytes(b"existe")
+
+            moved = execute_move(move_source, existing_move, dry_run=True)
+            copied = execute_copy(copy_source, existing_copy, dry_run=True)
+
+            self.assertEqual(Path(moved[1]).name, "destino (2).pdf")
+            self.assertEqual(Path(copied[1]).name, "copia (2).pdf")
+            self.assertTrue(move_source.exists())
+            self.assertEqual(existing_move.read_bytes(), b"existe")
+
+    def test_project_duplicate_quarantine_target_preserves_file_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "organizar" / "P20051-PAINEL FINAL (1).dwg"
+            source.parent.mkdir()
+            source.write_bytes(b"dwg")
+
+            target = duplicate_quarantine_target(root, source, "a" * 64)
+
+            self.assertEqual(target.suffix, ".dwg")
+            self.assertEqual(target.name, "p20051_painel_final_1.dwg")
 
     def test_scan_reports_file_and_directory_composition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,6 +10,13 @@ O Arruma Dir organiza somente depois de gerar uma previa.
 - `arquivo`: itens inativos ou antigos que voce quer guardar.
 - `entrada`: itens que ainda precisam de decisao humana.
 
+O app tambem aprende variantes ja existentes na raiz. Se encontrar um padrao forte como
+`__Minhas-areas/001-saude`, `__Minhas-areas/002-carreira`,
+`__Minhas-areas/004-empresas_financeiro` e `__Minhas-areas/005-pessoal`,
+ele usa essa raiz e essas pastas numeradas como destino em vez de criar uma nova arvore
+`areas/...`. O mesmo vale para `_entrada/revisar`, que e respeitada como caixa de entrada
+quando ja existe.
+
 ## Exemplos de destinos
 
 - `projetos/automacao_codigo`: scripts, Python, PowerShell, WSL, Rust, web apps e PLC.

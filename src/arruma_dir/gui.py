@@ -5,7 +5,7 @@ import queue
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -94,6 +94,7 @@ class ArrumaDirApp(tk.Tk):
             "duplicates": tk.StringVar(value="0"),
             "possible": tk.StringVar(value="0"),
             "external": tk.StringVar(value="0"),
+            "warnings": tk.StringVar(value="0"),
             "errors": tk.StringVar(value="0"),
         }
         self.progress_var = tk.DoubleVar(value=0.0)
@@ -130,9 +131,12 @@ class ArrumaDirApp(tk.Tk):
         style.configure("TLabelframe.Label", background=APP_BG, foreground="#334155", font=("Segoe UI Semibold", 9))
         style.configure("TButton", padding=(10, 6))
         style.configure("Primary.TButton", padding=(14, 7), foreground="#ffffff", background=ACCENT)
+        style.configure("Mutate.TButton", padding=(10, 6), foreground="#ffffff", background="#d97706")
         style.configure("Stop.TButton", padding=(10, 6), foreground="#ffffff", background="#dc2626")
+        style.configure("Error.Panel.TLabel", background=PANEL_BG, foreground="#b91c1c", font=("Segoe UI", 8))
         style.map("Stop.TButton", background=[("active", "#b91c1c"), ("disabled", "#fca5a5")])
         style.map("Primary.TButton", background=[("active", "#1d4ed8"), ("disabled", "#94a3b8")])
+        style.map("Mutate.TButton", background=[("active", "#b45309"), ("disabled", "#fcd34d")])
         style.configure("Disk.Horizontal.TProgressbar", background=ACCENT, troughcolor="#e2e8f0")
         style.configure("Treeview", rowheight=26, font=("Segoe UI", 9), bordercolor="#e2e8f0", fieldbackground="#ffffff")
         style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9), background="#e8edf5", foreground="#0f172a")
@@ -262,15 +266,25 @@ class ArrumaDirApp(tk.Tk):
         self.standardize_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.export_button = ttk.Button(actions, text="Exportar JSON", command=self.export_json)
         self.export_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        self.move_selected_button = ttk.Button(actions, text="Mover item selecionado", command=self.move_selected_duplicate)
+        self.move_selected_button = ttk.Button(
+            actions,
+            text="Mover item selecionado",
+            command=self.move_selected_duplicate,
+            style="Mutate.TButton",
+        )
         self.move_selected_button.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        self.move_duplicates_button = ttk.Button(actions, text="Mover duplicatas seguras", command=self.move_duplicates)
+        self.move_duplicates_button = ttk.Button(
+            actions,
+            text="Mover duplicatas seguras",
+            command=self.move_duplicates,
+            style="Mutate.TButton",
+        )
         self.move_duplicates_button.grid(row=5, column=0, sticky="ew", pady=(8, 0))
-        self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization)
+        self.apply_button = ttk.Button(actions, text="Aplicar plano", command=self.apply_organization, style="Mutate.TButton")
         self.apply_button.grid(row=6, column=0, sticky="ew", pady=(8, 0))
-        self.populate_base_button = ttk.Button(actions, text="Popular base", command=self.populate_base)
+        self.populate_base_button = ttk.Button(actions, text="Popular base", command=self.populate_base, style="Mutate.TButton")
         self.populate_base_button.grid(row=7, column=0, sticky="ew", pady=(8, 0))
-        self.rollback_button = ttk.Button(actions, text="Voltar ultima acao", command=self.rollback_last_action)
+        self.rollback_button = ttk.Button(actions, text="Voltar ultima acao", command=self.rollback_last_action, style="Mutate.TButton")
         self.rollback_button.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.stop_button = ttk.Button(actions, text="Parar Operacao", command=self.cancel_operation, style="Stop.TButton")
         self.stop_button.grid(row=9, column=0, sticky="ew", pady=(8, 0))
@@ -279,14 +293,15 @@ class ArrumaDirApp(tk.Tk):
 
         summary = ttk.Frame(self, padding=(12, 0, 12, 10))
         summary.grid(row=2, column=0, sticky="ew")
-        summary.columnconfigure(5, weight=1)
+        summary.columnconfigure(6, weight=1)
         self._make_stat(summary, "Planejados", self.summary_vars["planned"], 0)
         self._make_stat(summary, "Duplicatas", self.summary_vars["duplicates"], 1)
         self._make_stat(summary, "Possiveis", self.summary_vars["possible"], 2)
         self._make_stat(summary, "Externos", self.summary_vars["external"], 3)
-        self._make_stat(summary, "Erros", self.summary_vars["errors"], 4)
+        self._make_stat(summary, "Avisos", self.summary_vars["warnings"], 4)
+        self._make_stat(summary, "Erros", self.summary_vars["errors"], 5)
         next_box = ttk.Frame(summary, style="Panel.TFrame", padding=(12, 8))
-        next_box.grid(row=0, column=5, sticky="ew", padx=(8, 0))
+        next_box.grid(row=0, column=6, sticky="ew", padx=(8, 0))
         next_box.columnconfigure(0, weight=1)
         ttk.Label(next_box, text="Proximo passo", style="PanelMuted.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(next_box, textvariable=self.next_step_var, style="Panel.TLabel", wraplength=460).grid(
@@ -414,11 +429,13 @@ class ArrumaDirApp(tk.Tk):
         external: int,
         errors: int,
         next_step: str,
+        warnings: int = 0,
     ) -> None:
         self.summary_vars["planned"].set(str(planned))
         self.summary_vars["duplicates"].set(str(duplicates))
         self.summary_vars["possible"].set(str(possible))
         self.summary_vars["external"].set(str(external))
+        self.summary_vars["warnings"].set(str(warnings))
         self.summary_vars["errors"].set(str(errors))
         self.next_step_var.set(next_step)
 
@@ -770,14 +787,98 @@ class ArrumaDirApp(tk.Tk):
         return True
 
     def _confirm_action(self, title: str, message: str, *, code: str = "APLICAR") -> bool:
-        answer = messagebox.askyesno(title, message)
-        if not answer:
-            return False
-        typed = simpledialog.askstring(title, f"Digite {code} para confirmar:")
-        if typed != code:
-            self._append_log(f"{title}: cancelado por confirmacao invalida.")
-            return False
-        return True
+        result = {"confirmed": False}
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.configure(bg=PANEL_BG)
+        dialog.resizable(False, False)
+        dialog.transient(self)
+
+        container = ttk.Frame(dialog, style="Panel.TFrame", padding=(18, 16))
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            container,
+            text=title,
+            style="Panel.TLabel",
+            font=("Segoe UI Semibold", 12),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            container,
+            text=message,
+            style="Panel.TLabel",
+            wraplength=540,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(10, 0))
+
+        ttk.Label(
+            container,
+            text=f"Digite {code} para confirmar.",
+            style="PanelMuted.TLabel",
+        ).grid(row=2, column=0, sticky="w", pady=(14, 4))
+
+        typed_var = tk.StringVar()
+        entry = ttk.Entry(container, textvariable=typed_var, width=32)
+        entry.grid(row=3, column=0, sticky="ew")
+
+        error_var = tk.StringVar(value="")
+        ttk.Label(container, textvariable=error_var, style="Error.Panel.TLabel").grid(
+            row=4,
+            column=0,
+            sticky="w",
+            pady=(6, 0),
+        )
+
+        buttons = ttk.Frame(container, style="Panel.TFrame")
+        buttons.grid(row=5, column=0, sticky="e", pady=(14, 0))
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def confirm() -> None:
+            if not self._confirmation_matches(typed_var.get(), code):
+                error_var.set(f"Codigo nao confere. Digite {code} para continuar.")
+                entry.focus_set()
+                entry.selection_range(0, "end")
+                return
+            result["confirmed"] = True
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancelar", command=cancel).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Confirmar", command=confirm, style="Mutate.TButton").pack(side="left")
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.bind("<Escape>", lambda _event: cancel())
+        dialog.bind("<Return>", lambda _event: confirm())
+        dialog.update_idletasks()
+        self._center_dialog(dialog)
+        entry.focus_set()
+        dialog.grab_set()
+        self.wait_window(dialog)
+        try:
+            dialog.grab_release()
+        except tk.TclError:
+            pass
+
+        if not result["confirmed"]:
+            self._append_log(f"{title}: cancelado.")
+        return result["confirmed"]
+
+    @staticmethod
+    def _confirmation_matches(value: str, code: str) -> bool:
+        return value.strip().upper() == code.strip().upper()
+
+    def _center_dialog(self, dialog: tk.Toplevel) -> None:
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        root_x = self.winfo_rootx()
+        root_y = self.winfo_rooty()
+        root_width = max(self.winfo_width(), 1)
+        root_height = max(self.winfo_height(), 1)
+        x = root_x + max((root_width - width) // 2, 0)
+        y = root_y + max((root_height - height) // 2, 0)
+        dialog.geometry(f"+{x}+{y}")
 
     def cancel_operation(self) -> None:
         self.cancel_event.set()
@@ -1527,6 +1628,7 @@ class ArrumaDirApp(tk.Tk):
             f"{stats['batch_safe_duplicate_groups']} copias exatas, "
             f"{stats['exact_duplicate_groups']} exatos totais, "
             f"{stats['possible_duplicate_groups']} possiveis, "
+            f"{stats['skipped']} avisos, "
             f"{stats['errors']} erros"
         )
         self._set_summary(
@@ -1536,6 +1638,7 @@ class ArrumaDirApp(tk.Tk):
             external=0,
             errors=stats["errors"],
             next_step=self._document_scan_next_step(stats),
+            warnings=stats["skipped"],
         )
         self._append_log(f"Previa concluida: {result.root}")
         for skipped in result.skipped:
@@ -1615,6 +1718,7 @@ class ArrumaDirApp(tk.Tk):
             f"{stats['organization_moves']} movimentos, "
             f"{stats['duplicate_moves']} duplicatas, "
             f"{stats['external_candidates']} candidatos externos, "
+            f"{stats['warnings']} avisos, "
             f"{stats['errors']} erros"
         )
         self._set_summary(
@@ -1624,6 +1728,7 @@ class ArrumaDirApp(tk.Tk):
             external=stats["external_candidates"],
             errors=stats["errors"],
             next_step=self._project_scan_next_step(stats),
+            warnings=stats["warnings"],
         )
         self._append_log(f"Previa de projetos concluida: {report.root}")
         for warning in report.warnings:
@@ -1961,9 +2066,14 @@ class ArrumaDirApp(tk.Tk):
 
         if self.scan_result:
             moved = set(moved_sources)
-            self.scan_result.duplicates = [
-                group for group in self.scan_result.duplicates if not any(file_path in moved for file_path in group.files)
-            ]
+            remaining_groups = []
+            for group in self.scan_result.duplicates:
+                remaining_files = [file_path for file_path in group.files if file_path not in moved]
+                if len(remaining_files) < 2:
+                    continue
+                group.files = remaining_files
+                remaining_groups.append(group)
+            self.scan_result.duplicates = remaining_groups
         if self.project_report:
             moved = set(moved_sources)
             self.project_report.duplicates = [

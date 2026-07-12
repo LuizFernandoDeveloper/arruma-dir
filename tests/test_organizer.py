@@ -12,6 +12,7 @@ from arruma_dir.organizer import (
     clean_leaf_name,
     duplicate_hash_label,
     find_duplicate_files,
+    learn_directory_profile,
     move_duplicates_to_quarantine,
     rollback_moves,
     scan_directory,
@@ -34,6 +35,162 @@ class OrganizerTests(unittest.TestCase):
             dated = Path(tmp) / "02-05-2025.ods"
             dated.write_text("data", encoding="utf-8")
             self.assertEqual(clean_leaf_name(dated, compat_names=True), "02-05-2025.ods")
+
+    def test_standardization_removes_number_prefix_and_spaces_from_common_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "1 - Name With Spaces"
+            source.mkdir()
+            (source / "Arquivo Interno.txt").write_text("x", encoding="utf-8")
+
+            scan = scan_name_standardization(root)
+            by_source = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertIn(source.name, by_source)
+            self.assertEqual(Path(by_source[source.name].destination).name, "001-name-with-spaces")
+
+            result = apply_plan(scan.plan, root)
+
+            self.assertFalse(result.errors)
+            self.assertFalse(source.exists())
+            self.assertTrue((root / "001-name-with-spaces" / "arquivo-interno.txt").exists())
+
+    def test_name_standardization_renames_case_only_folders_inside_user_areas(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marketplaces = root / "areas" / "empresas_financeiro" / "Marketplaces"
+            mecatronica = root / "areas" / "empresas_financeiro" / "Mecatronica"
+            marketplaces.mkdir(parents=True)
+            mecatronica.mkdir()
+
+            scan = scan_name_standardization(root)
+            destinations = {Path(item.destination).name for item in scan.plan}
+
+            self.assertIn("marketplaces", destinations)
+            self.assertIn("mecatronica", destinations)
+
+            result = apply_plan(scan.plan, root)
+
+            self.assertFalse(result.errors)
+            final_names = {item.name for item in (root / "areas" / "empresas_financeiro").iterdir()}
+            self.assertNotIn("Marketplaces", final_names)
+            self.assertNotIn("Mecatronica", final_names)
+            self.assertIn("marketplaces", final_names)
+            self.assertIn("mecatronica", final_names)
+
+    def test_case_only_standardization_can_be_rolled_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "areas" / "empresas_financeiro" / "Marketplaces"
+            source.mkdir(parents=True)
+
+            scan = scan_name_standardization(root)
+            applied = apply_plan(scan.plan, root)
+            rolled_back = rollback_moves(applied.moved, root)
+
+            self.assertFalse(applied.errors)
+            self.assertFalse(rolled_back.errors)
+            final_names = {item.name for item in (root / "areas" / "empresas_financeiro").iterdir()}
+            self.assertIn("Marketplaces", final_names)
+
+    def test_name_standardization_preserves_default_program_folders_and_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            program_folders = [
+                root / "6 - Custom Office Templates",
+                root / "Acade 2026",
+                root / "Battlefield 4",
+                root / "Blocos de Anotações do OneNote",
+                root / "CATIAComposer",
+                root / "Factory IO",
+                root / "FluidSIM Hydraulics",
+                root / "Gravações de som",
+                root / "MATLAB",
+                root / "Minhas Formas",
+                root / "Modelos Personalizados do Office",
+                root / "OneNote Notebooks",
+            ]
+            for folder in program_folders:
+                (folder / "Child Folder With Spaces").mkdir(parents=True)
+
+            scan = scan_name_standardization(root)
+            planned_sources = {Path(item.source) for item in scan.plan}
+
+            self.assertEqual(planned_sources, set())
+
+    def test_learns_numbered_area_root_from_existing_documents_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "__Minhas-areas" / "001-saude").mkdir(parents=True)
+            (root / "__Minhas-areas" / "002-carreira").mkdir()
+            (root / "__Minhas-areas" / "004-empresas_financeiro" / "padroes").mkdir(parents=True)
+            (root / "__Minhas-areas" / "005-pessoal").mkdir()
+            (root / "_entrada" / "revisar").mkdir(parents=True)
+
+            profile = learn_directory_profile(root)
+
+            self.assertEqual(profile.area_root, Path("__Minhas-areas"))
+            self.assertEqual(profile.area_children["saude"], Path("__Minhas-areas") / "001-saude")
+            self.assertEqual(
+                profile.area_children["empresas financeiro"],
+                Path("__Minhas-areas") / "004-empresas_financeiro",
+            )
+            self.assertEqual(profile.entry_root, Path("_entrada"))
+
+    def test_scan_uses_learned_area_root_for_new_area_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "__Minhas-areas" / "001-saude").mkdir(parents=True)
+            (root / "__Minhas-areas" / "004-empresas_financeiro" / "padroes").mkdir(parents=True)
+            contract = root / "Contrato empresa.docx"
+            exam = root / "Exame saude.pdf"
+            contract.write_text("empresa", encoding="utf-8")
+            exam.write_text("saude", encoding="utf-8")
+
+            scan = scan_directory(root, include_duplicates=False)
+            by_name = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertEqual(
+                Path(by_name[contract.name].destination).parent,
+                root / "__Minhas-areas" / "004-empresas_financeiro",
+            )
+            self.assertEqual(
+                Path(by_name[exam.name].destination).parent,
+                root / "__Minhas-areas" / "001-saude",
+            )
+
+    def test_scan_uses_learned_entry_root_for_review_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "_entrada" / "revisar").mkdir(parents=True)
+            unknown = root / "coisa-sem-regra.bin"
+            unknown.write_bytes(b"x")
+
+            scan = scan_directory(root, include_duplicates=False)
+
+            self.assertEqual(len(scan.plan), 1)
+            self.assertEqual(Path(scan.plan[0].destination).parent, root / "_entrada" / "revisar")
+
+    def test_standardization_preserves_learned_area_root_but_cleans_children(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root_area = root / "__Minhas-areas"
+            company = root_area / "004-empresas_financeiro"
+            marketplaces = company / "Marketplaces"
+            mecatronica = company / "Mecatronica"
+            marketplaces.mkdir(parents=True)
+            mecatronica.mkdir()
+            (root_area / "001-saude").mkdir()
+            (root_area / "002-carreira").mkdir()
+            (root_area / "005-pessoal").mkdir()
+
+            scan = scan_name_standardization(root)
+            by_source = {Path(item.source).name: item for item in scan.plan}
+
+            self.assertNotIn("__Minhas-areas", by_source)
+            self.assertNotIn("004-empresas_financeiro", by_source)
+            self.assertEqual(Path(by_source["Marketplaces"].destination).name, "marketplaces")
+            self.assertEqual(Path(by_source["Mecatronica"].destination).name, "mecatronica")
 
     def test_scan_categorizes_numbered_folders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -513,6 +670,30 @@ class OrganizerTests(unittest.TestCase):
             self.assertTrue((root / "relatorio.pdf").exists())
             self.assertTrue((root / "relatorio (1).pdf").exists())
 
+    def test_same_size_copy_name_with_different_hash_is_review_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "relatorio.pdf"
+            copy = root / "relatorio copia.pdf"
+            original.write_bytes(b"ab")
+            copy.write_bytes(b"cd")
+
+            duplicate_scan = find_duplicate_files(root)
+            possible = [group for group in duplicate_scan.duplicates if group.kind == "possible"]
+            exact = [group for group in duplicate_scan.duplicates if group.kind == "exact"]
+
+            self.assertEqual(exact, [])
+            self.assertEqual(len(possible), 1)
+            self.assertTrue(any("SHA-256 diferente" in item for item in possible[0].differences))
+            self.assertEqual(duplicate_hash_label(possible[0]), "SHA dif.")
+
+            result = move_duplicates_to_quarantine(root, duplicate_scan.duplicates)
+
+            self.assertEqual(result.moved, [])
+            self.assertEqual(len(result.skipped), 1)
+            self.assertTrue(original.exists())
+            self.assertTrue(copy.exists())
+
     def test_same_common_name_without_copy_marker_is_not_possible_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -598,6 +779,42 @@ class OrganizerTests(unittest.TestCase):
             self.assertTrue(keeper.exists())
             self.assertFalse(moved_source.exists())
             self.assertTrue(Path(result.moved[0][1]).exists())
+
+    def test_duplicate_quarantine_preserves_file_extension_in_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "manual.pdf").write_bytes(b"same")
+            (root / "manual copia.pdf").write_bytes(b"same")
+
+            duplicate_scan = find_duplicate_files(root)
+            result = move_duplicates_to_quarantine(root, duplicate_scan.duplicates, dry_run=True)
+
+            self.assertEqual(len(result.moved), 1)
+            self.assertEqual(Path(result.moved[0][1]).suffix, ".pdf")
+            self.assertTrue((root / "manual.pdf").exists())
+            self.assertTrue((root / "manual copia.pdf").exists())
+
+    def test_duplicate_quarantine_collision_keeps_existing_quarantine_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "manual.pdf").write_bytes(b"same")
+            (root / "manual copia.pdf").write_bytes(b"same")
+
+            duplicate_scan = find_duplicate_files(root)
+            dry_run = move_duplicates_to_quarantine(root, duplicate_scan.duplicates, dry_run=True)
+            first_target = Path(dry_run.moved[0][1])
+            first_target.parent.mkdir(parents=True)
+            first_target.write_text("arquivo ja estava aqui", encoding="utf-8")
+
+            result = move_duplicates_to_quarantine(root, duplicate_scan.duplicates)
+
+            self.assertFalse(result.errors)
+            self.assertEqual(len(result.moved), 1)
+            final_target = Path(result.moved[0][1])
+            self.assertNotEqual(final_target, first_target)
+            self.assertEqual(final_target.suffix, ".pdf")
+            self.assertTrue(final_target.exists())
+            self.assertEqual(first_target.read_text(encoding="utf-8"), "arquivo ja estava aqui")
 
 
 if __name__ == "__main__":

@@ -74,10 +74,16 @@ class EntryPointTests(unittest.TestCase):
         )
 
     def test_pyinstaller_spec_keeps_project_modules_visible(self) -> None:
-        spec = Path("ArrumaDir.spec").read_text(encoding="utf-8")
+        # O projeto nao versiona um ArrumaDir.spec estatico (fica em .gitignore,
+        # pois e gerado pelo PyInstaller a cada build). O build_exe.ps1 e quem
+        # garante que project_organizer/project_cli continuem visiveis no
+        # executavel via --hidden-import; entao validamos a fonte real em vez
+        # de um arquivo que so existe depois de um build local no Windows.
+        script = Path("scripts") / "build_exe.ps1"
+        content = script.read_text(encoding="utf-8")
 
-        self.assertIn("'arruma_dir.project_organizer'", spec)
-        self.assertIn("'arruma_dir.project_cli'", spec)
+        self.assertIn('"arruma_dir.project_organizer"', content)
+        self.assertIn('"arruma_dir.project_cli"', content)
 
 
 if __name__ == "__main__":

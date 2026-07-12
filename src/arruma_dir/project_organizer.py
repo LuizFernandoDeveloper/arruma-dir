@@ -15,9 +15,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable, TypedDict
 
-from arruma_dir.hardware import detect_hardware, normalize_performance_mode
-from arruma_dir.logging_utils import close_logger, create_operation_logger
-
 
 DEFAULT_ROOT = Path(r"F:\projetos")
 STATE_DIR = "_arruma_projetos"
@@ -835,7 +832,10 @@ def duplicate_quarantine_target(root: Path, source: Path, digest: str) -> Path:
         rel = source.relative_to(root)
     except ValueError:
         rel = Path(source.drive.replace(":", "")) / source.relative_to(source.anchor)
-    safe_parts = [slug(part) for part in rel.parts]
+    safe_parts = [
+        safe_filename(part) if source.is_file() and index == len(rel.parts) - 1 else slug(part)
+        for index, part in enumerate(rel.parts)
+    ]
     return state_path(root, DUPLICATES_DIR, digest[:12], *safe_parts)
 
 
@@ -1269,9 +1269,9 @@ def load_report(path: Path) -> ProjectReport:
 
 
 def execute_move(source: Path, destination: Path, *, dry_run: bool) -> tuple[str, str]:
+    destination = unique_path(destination)
     if dry_run:
         return (str(source), str(destination))
-    destination = unique_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(destination))
     return (str(source), str(destination))
@@ -1297,12 +1297,17 @@ def execute_merge_dir(source: Path, destination: Path, *, dry_run: bool) -> list
         destination.mkdir(parents=True, exist_ok=True)
 
     for child in sorted(source.iterdir(), key=lambda item: item.name.lower()):
-        target = unique_path(destination / child.name)
-        moved.append((str(child), str(target)))
+        target = destination / child.name
+        if child.is_dir() and target.exists() and target.is_dir():
+            moved.extend(execute_merge_dir(child, target, dry_run=dry_run))
+            continue
+        target = unique_path(target)
         if dry_run:
+            moved.append((str(child), str(target)))
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(child), str(target))
+        moved.append((str(child), str(target)))
 
     if not dry_run:
         try:
@@ -1313,9 +1318,9 @@ def execute_merge_dir(source: Path, destination: Path, *, dry_run: bool) -> list
 
 
 def execute_copy(source: Path, destination: Path, *, dry_run: bool) -> tuple[str, str]:
+    destination = unique_path(destination)
     if dry_run:
         return (str(source), str(destination))
-    destination = unique_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(source), str(destination))
     return (str(source), str(destination))
@@ -1362,6 +1367,7 @@ def apply_report(
             source = Path(item.source)
             destination = Path(item.destination)
             try:
+                ensure_inside(root, source)
                 ensure_inside(root, destination)
                 if not source.exists():
                     result["skipped"].append(f"nao existe: {source}")
@@ -1390,6 +1396,7 @@ def apply_report(
             source = Path(item.source)
             destination = Path(item.destination)
             try:
+                ensure_inside(root, source)
                 ensure_inside(root, destination)
                 if not source.exists():
                     result["skipped"].append(f"nao existe: {source}")
